@@ -1,0 +1,13 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MAIN.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 GREETING PIC X(255).
+       01 NAME PIC X(255).
+
+       PROCEDURE DIVISION.
+           MOVE "Hello" TO GREETING.
+           MOVE "Arnav" TO NAME.
+           DISPLAY GREETING.
+           DISPLAY NAME.
+           STOP RUN.
