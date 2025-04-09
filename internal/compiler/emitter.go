@@ -13,12 +13,23 @@ const (
 type Emitter struct {
 	builder   strings.Builder
 	variables map[string]string
+	errors    []string
 }
 
 func NewEmitter() *Emitter {
 	return &Emitter{
 		variables: make(map[string]string),
+		errors:    []string{},
 	}
+}
+
+func (e *Emitter) addError(format string, args ...interface{}) {
+	errMsg := fmt.Sprintf(format, args...)
+	e.errors = append(e.errors, errMsg)
+}
+
+func (e *Emitter) Errors() []string {
+	return e.errors
 }
 
 func (e *Emitter) Emit(program *Program) string {
@@ -96,7 +107,7 @@ func (e *Emitter) emitFooter() {
 
 func (e *Emitter) emitPrint(stmt *PrintStatement) {
 	if stmt == nil || stmt.Value == nil {
-		fmt.Println("Error: Invalid print statement or value is nil")
+		e.addError("Invalid print statement or value is nil")
 		return
 	}
 
@@ -106,13 +117,13 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 	case *Identifier:
 		e.emitB(fmt.Sprintf(`DISPLAY %s.`, strings.ToUpper(v.Value)))
 	default:
-		fmt.Printf(`Statement value %v is not a string literal or identifier`, v)
+		e.addError("Statement value %v is not a string literal or identifier", v)
 	}
 }
 
 func (e *Emitter) emitAssignment(stmt *AssignmentStatement) {
 	if stmt == nil || stmt.Value == nil {
-		fmt.Println("Error: Invalid assignment statement")
+		e.addError("Invalid assignment statement")
 		return
 	}
 
@@ -120,8 +131,8 @@ func (e *Emitter) emitAssignment(stmt *AssignmentStatement) {
 	case *StringLiteral:
 		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s.`, v.Value, strings.ToUpper(stmt.Name.Value)))
 	case *IntegerLiteral:
-		e.emitB(fmt.Sprintf(`MOVE "%d" TO %s.`, v.Value, strings.ToUpper(stmt.Name.Value)))
+		e.emitB(fmt.Sprintf(`MOVE %d TO %s.`, v.Value, strings.ToUpper(stmt.Name.Value)))
 	default:
-		fmt.Printf(`Assignment value %v is not a supported type`, v)
+		e.addError("Assignment value %v is not a supported type", v)
 	}
 }

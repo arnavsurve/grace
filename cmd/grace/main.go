@@ -36,6 +36,16 @@ func main() {
 	parser := compiler.NewParser(lexer)
 	program := parser.ParseProgram()
 
+	// Check for parser errors
+	errors := parser.Errors()
+	if len(errors) > 0 {
+		fmt.Println("Parser errors:")
+		for _, err := range errors {
+			fmt.Printf("\t%s\n", err)
+		}
+		os.Exit(1)
+	}
+
 	fmt.Println("AST:")
 	for _, stmt := range program.Statements {
 		fmt.Printf("%#v\n", stmt)
@@ -44,6 +54,16 @@ func main() {
 
 	emitter := compiler.NewEmitter()
 	cobolOutput := emitter.Emit(program)
+
+	// Check for emitter errors
+	emitterErrors := emitter.Errors()
+	if len(emitterErrors) > 0 {
+		fmt.Println("Emitter errors:")
+		for _, err := range emitterErrors {
+			fmt.Printf("\t%s\n", err)
+		}
+		os.Exit(1)
+	}
 
 	fmt.Println("Generated COBOL:")
 	fmt.Println(cobolOutput)
