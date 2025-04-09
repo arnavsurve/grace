@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/arnavsurve/loveugrace/internal/compiler"
+	"github.com/arnavsurve/grace/internal/compiler"
 )
 
 func main() {
