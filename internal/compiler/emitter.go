@@ -12,12 +12,12 @@ const (
 
 type Emitter struct {
 	builder   strings.Builder
-	variables map[string]bool // Track declared variables
+	variables map[string]string
 }
 
 func NewEmitter() *Emitter {
 	return &Emitter{
-		variables: make(map[string]bool),
+		variables: make(map[string]string),
 	}
 }
 
@@ -25,7 +25,12 @@ func (e *Emitter) Emit(program *Program) string {
 	// First pass to collect variables
 	for _, stmt := range program.Statements {
 		if assignment, ok := stmt.(*AssignmentStatement); ok {
-			e.variables[assignment.Name.Value] = true
+			switch assignment.Value.(type) {
+			case *StringLiteral:
+				e.variables[assignment.Name.Value] = "string"
+			case *IntegerLiteral:
+				e.variables[assignment.Name.Value] = "int"
+			}
 		}
 	}
 
@@ -68,9 +73,17 @@ func (e *Emitter) emitDataDivision() {
 		e.emitA("WORKING-STORAGE SECTION.")
 
 		// Declare variables
-		for varName := range e.variables {
-			e.emitA(fmt.Sprintf("01 %s PIC X(255).", strings.ToUpper(varName)))
+		for varName, typ := range e.variables {
+			cobolName := strings.ToUpper(varName)
+
+			switch typ {
+			case "string":
+				e.emitA(fmt.Sprintf("01 %s PIC X(255).", cobolName))
+			case "int":
+				e.emitA(fmt.Sprintf("01 %s PIC 9(9).", cobolName))
+			}
 		}
+
 		e.builder.WriteString("\n")
 	}
 
@@ -106,6 +119,8 @@ func (e *Emitter) emitAssignment(stmt *AssignmentStatement) {
 	switch v := stmt.Value.(type) {
 	case *StringLiteral:
 		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s.`, v.Value, strings.ToUpper(stmt.Name.Value)))
+	case *IntegerLiteral:
+		e.emitB(fmt.Sprintf(`MOVE "%d" TO %s.`, v.Value, strings.ToUpper(stmt.Name.Value)))
 	default:
 		fmt.Printf(`Assignment value %v is not a supported type`, v)
 	}

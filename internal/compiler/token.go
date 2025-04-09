@@ -12,6 +12,7 @@ const (
 
 	// Literals
 	TokenString TokenType = "STRING"
+	TokenInt    TokenType = "INT"
 
 	// Special
 	TokenEOF     TokenType = "EOF"

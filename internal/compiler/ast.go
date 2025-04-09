@@ -28,7 +28,7 @@ func (p *Program) TokenLiteral() string {
 
 // PrintStatement -> print("hello")
 type PrintStatement struct {
-	Token Token // 'print'
+	Token Token // print
 	Value Expression
 }
 
@@ -43,6 +43,15 @@ type StringLiteral struct {
 
 func (sl *StringLiteral) expressionNode()      {}
 func (sl *StringLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+// IntegerLiteral -> 21
+type IntegerLiteral struct {
+	Token Token
+	Value int
+}
+
+func (il *IntegerLiteral) expressionNode()      {}
+func (il *IntegerLiteral) TokenLiteral() string { return il.Token.Literal }
 
 type AssignmentStatement struct {
 	Token Token // :=

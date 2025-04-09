@@ -63,6 +63,8 @@ func (l *Lexer) NextToken() Token {
 			default:
 				return Token{Type: TokenIdent, Literal: ident}
 			}
+		} else if isDigit(l.ch) {
+			return l.readInteger()
 		}
 		return Token{Type: TokenIllegal, Literal: string(l.ch)}
 	}
@@ -93,6 +95,14 @@ func (l *Lexer) readString() Token {
 	return Token{Type: TokenString, Literal: lit}
 }
 
+func (l *Lexer) readInteger() Token {
+	start := l.position
+	for isDigit(l.ch) {
+		l.readChar()
+	}
+	return Token{Type: TokenInt, Literal: l.input[start:l.position]}
+}
+
 func (l *Lexer) peekChar() byte {
 	if l.readPosition >= len(l.input) {
 		return 0
@@ -102,4 +112,8 @@ func (l *Lexer) peekChar() byte {
 
 func isLetter(ch byte) bool {
 	return unicode.IsLetter(rune(ch))
+}
+
+func isDigit(ch byte) bool {
+	return '0' <= ch && ch <= '9'
 }

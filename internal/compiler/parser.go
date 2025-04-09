@@ -1,13 +1,23 @@
 package compiler
 
+import (
+	"fmt"
+	"strconv"
+)
+
 type Parser struct {
 	l       *Lexer
 	curTok  Token
 	peekTok Token
+
+	symbolTable map[string]string // varName -> type ("string" or "int")
 }
 
 func NewParser(l *Lexer) *Parser {
-	p := &Parser{l: l}
+	p := &Parser{
+		l:           l,
+		symbolTable: make(map[string]string),
+	}
 	p.nextToken()
 	p.nextToken()
 	return p
@@ -56,12 +66,18 @@ func (p *Parser) parsePrintStatement() *PrintStatement {
 		return nil
 	}
 
-	// Expect expression (string literal or identifier)
+	// Expect expression (string literal, int, or identifier)
 	p.nextToken()
 	if p.curTok.Type == TokenString {
 		stmt.Value = &StringLiteral{Token: p.curTok, Value: p.curTok.Literal}
 	} else if p.curTok.Type == TokenIdent {
 		stmt.Value = &Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	} else if p.curTok.Type == TokenInt {
+		val, err := strconv.ParseInt(p.curTok.Literal, 10, 64)
+		if err != nil {
+			return nil
+		}
+		stmt.Value = &IntegerLiteral{Token: p.curTok, Value: int(val)}
 	} else {
 		return nil
 	}
@@ -81,6 +97,8 @@ func (p *Parser) parseAssignmentStatement() *AssignmentStatement {
 	// Identifier name
 	stmt.Name = &Identifier{Token: p.curTok, Value: p.curTok.Literal}
 
+	varName := stmt.Name.Value
+
 	// Expect :=
 	p.nextToken()
 	if p.curTok.Type != TokenAssignDefine {
@@ -91,11 +109,30 @@ func (p *Parser) parseAssignmentStatement() *AssignmentStatement {
 
 	// Expect expression (currently only string literals supported)
 	p.nextToken()
-	if p.curTok.Type != TokenString {
-		return nil
-	}
 
-	stmt.Value = &StringLiteral{Token: p.curTok, Value: p.curTok.Literal}
+	switch p.curTok.Type {
+	case TokenString:
+		stmt.Value = &StringLiteral{Token: p.curTok, Value: p.curTok.Literal}
+
+		if prevType, exists := p.symbolTable[varName]; exists && prevType != "string" {
+			fmt.Printf("Type error: Cannot assign string to variable '%s' (already declared as %s)\n", varName, prevType)
+			return nil
+		}
+		p.symbolTable[varName] = "string"
+
+	case TokenInt:
+		val, err := strconv.ParseInt(p.curTok.Literal, 10, 64)
+		if err != nil {
+			return nil
+		}
+		stmt.Value = &IntegerLiteral{Token: p.curTok, Value: int(val)}
+
+		if prevType, exists := p.symbolTable[varName]; exists && prevType != "int" {
+			fmt.Printf("Type error: Cannot assign string to variable '%s' (already declared as %s)\n", varName, prevType)
+			return nil
+		}
+		p.symbolTable[varName] = "int"
+	}
 
 	return stmt
 }
