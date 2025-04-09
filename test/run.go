@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const graceCmd = "go run ./cmd/grace"
@@ -42,10 +43,14 @@ func runGoodTests(dir string) {
 			continue
 		}
 
+		// Determine actual output path (matching logic in main.go)
+		nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
+		outfilePath := filepath.Join("out", nameWithoutExt+".cob")
+
 		// Read actual output
-		actual, err := os.ReadFile("out/hello.cob")
+		actual, err := os.ReadFile(outfilePath)
 		if err != nil {
-			fmt.Println("❌ Missing actual output")
+			fmt.Println("❌ Missing actual output:", outfilePath)
 			continue
 		}
 

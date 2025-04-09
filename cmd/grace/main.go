@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/arnavsurve/loveugrace/internal/compiler"
 )
@@ -68,8 +69,21 @@ func main() {
 	fmt.Println("Generated COBOL:")
 	fmt.Println(cobolOutput)
 
-	err = os.WriteFile("out/hello.cob", []byte(cobolOutput), 0644)
+	baseName := filepath.Base(filename)
+	nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	outDir := "out"
+
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		fmt.Printf("Failed to create output directory %s: %v\n", outDir, err)
+		os.Exit(1)
+	}
+
+	outfileName := filepath.Join(outDir, nameWithoutExt+".cob")
+
+	err = os.WriteFile(outfileName, []byte(cobolOutput), 0644)
 	if err != nil {
-		fmt.Printf("Failed to write COBOL output: %v\n", err)
+		fmt.Printf("Failed to write COBOL output to %s: %v\n", outfileName, err)
+	} else {
+		fmt.Printf("Successfully wrote COBOL output to %s\n", outfileName)
 	}
 }
