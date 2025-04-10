@@ -5,6 +5,11 @@ import (
 	"strconv"
 )
 
+const (
+	defaultIntWidth    = 6
+	defaultStringWidth = 30
+)
+
 type Parser struct {
 	l           *Lexer
 	curTok      Token
@@ -166,9 +171,32 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		p.addError("Semantic Error: Could not determine type for expression assigned to '%s'", varName)
 	}
 
+	var varWidth int
+
+	// Include variable width in symbol table
+	// TODO: implement explicit width definition in explicit typing, for now we just implement the fallback default widths
+	switch val := stmt.Value.(type) {
+	case *IntegerLiteral:
+		varWidth = 6 // Default for inferred int
+	case *StringLiteral:
+		varWidth = 30 // Default for inferred string
+	case *Identifier:
+		// Look up identifier in symbol table
+		if info, ok := p.symbolTable[val.Value]; ok {
+			varWidth = info.Width
+		} else {
+			p.addError("Internal Error: Could not determine width of identifier '%s'", val.Value)
+			varWidth = 0 // fallback or skip insertion
+		}
+	case *BinaryExpression:
+		varWidth = val.ResultWidth()
+	default:
+		p.addError("Internal Error: Could not determine width of unknown identifier or literal.")
+	}
+
 	// Add to symbol table only if not previously declared and type is known
 	if !declared && valueType != "unknown" {
-		p.symbolTable[varName] = SymbolInfo{Type: valueType, IsConst: stmt.IsConst}
+		p.symbolTable[varName] = SymbolInfo{Type: valueType, IsConst: stmt.IsConst, Width: varWidth}
 		stmt.Name.ResolvedType = valueType
 	}
 
@@ -248,7 +276,7 @@ func (p *Parser) parsePrintStatement() Statement {
 	p.nextToken() // Consume (, curTok is now expression start
 
 	// --- Call the expression parser ---
-	expr := p.parseExpression() // <<<<<< CALL THE NEW TOP-LEVEL EXPRESSION PARSER
+	expr := p.parseExpression()
 	if expr == nil {
 		return nil
 	}
@@ -389,7 +417,8 @@ func (p *Parser) parsePrimary() Expression {
 
 func (p *Parser) parseIntegerLiteral() Expression {
 	// Same as before, ensure p.nextToken() is called
-	lit := &IntegerLiteral{Token: p.curTok}
+	// We initialize default width here, TODO implement explicit width
+	lit := &IntegerLiteral{Token: p.curTok, Width: defaultIntWidth}
 	val, err := strconv.ParseInt(p.curTok.Literal, 10, 64)
 	if err != nil {
 		p.addError("Syntax Error: Could not parse integer literal '%s': %v", p.curTok.Literal, err)
@@ -403,7 +432,8 @@ func (p *Parser) parseIntegerLiteral() Expression {
 
 func (p *Parser) parseStringLiteral() Expression {
 	// Same as before, ensure p.nextToken() is called
-	expr := &StringLiteral{Token: p.curTok, Value: p.curTok.Literal}
+	// We initialize default width here, TODO implement explicit width
+	expr := &StringLiteral{Token: p.curTok, Value: p.curTok.Literal, Width: defaultStringWidth}
 	p.nextToken() // Consume the string token
 	return expr
 }
@@ -412,13 +442,16 @@ func (p *Parser) parseIdentifier() Expression {
 	// Same as before, ensure p.nextToken() is called
 	varName := p.curTok.Literal
 	symbolInfo, declared := p.getSymbolInfo(varName)
+	expr := &Identifier{Token: p.curTok, Value: varName}
 	if !declared {
 		p.addError("Semantic Error: Identifier '%s' used before declaration", varName)
-		expr := &Identifier{Token: p.curTok, Value: varName, ResolvedType: "unknown"}
-		p.nextToken() // Consume identifier
-		return expr
+		expr.ResolvedType = "unknown"
+		expr.Width = 0
+	} else {
+		// Populate both type and width from symbol table
+		expr.ResolvedType = symbolInfo.Type
+		expr.Width = symbolInfo.Width
 	}
-	expr := &Identifier{Token: p.curTok, Value: varName, ResolvedType: symbolInfo.Type}
 	p.nextToken() // Consume identifier
 	return expr
 }

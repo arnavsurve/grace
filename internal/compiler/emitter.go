@@ -6,21 +6,27 @@ import (
 	"strings"
 )
 
+// NOTES:
+// Temp reuse is safe for single expression statements
+// Revisit this when we need to support multiple nested/composite expressions
+// Scoped temp management or a flattened IR when this comes up
+
 const (
-	areaAIndent = "       "     // 7 spaces (column 8)
-	areaBIndent = "           " // 11 spaces (column 12)
+	areaAIndent = "       "       // 7 spaces (column 8)
+	areaBIndent = "           "   // 11 spaces (column 12)
+	tempIntName = "GRACE-TMP-INT" // Temporary integer variable
 )
 
 type Emitter struct {
-	builder strings.Builder
-	errors  []string
-	// TODO: Add mechanism for temporary variables
-	// tempVarCounter int
+	builder      strings.Builder
+	errors       []string
+	needsTempInt bool
 }
 
 func NewEmitter() *Emitter {
 	return &Emitter{
-		errors: []string{},
+		errors:       []string{},
+		needsTempInt: false,
 	}
 }
 
@@ -33,8 +39,28 @@ func (e *Emitter) Errors() []string {
 	return e.errors
 }
 
+// Pre-pass to check for expression printing
+// This will be called before emitting the main divisions
+func (e *Emitter) analyzeProgram(program *Program) {
+	e.needsTempInt = false // Reset for analysis
+	for _, stmt := range program.Statements {
+		if ps, ok := stmt.(*PrintStatement); ok {
+			if _, isBinary := ps.Value.(*BinaryExpression); isBinary {
+				// Check if the result type is needsTempInt
+				if ps.Value.ResultType() == "int" {
+					e.needsTempInt = true
+					break
+				}
+				// TODO: check for other types needing temps (e.g. string concat)
+			}
+		}
+	}
+}
+
 func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
 	e.builder.Reset() // Ensure clean state for multiple calls if needed
+
+	e.analyzeProgram(program)
 
 	e.emitHeader(nameWithoutExt)
 	e.emitDataDivision(program.SymbolTable)
@@ -86,10 +112,18 @@ func (e *Emitter) emitHeader(nameWithoutExt string) {
 }
 
 func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
-	if len(symbolTable) > 0 {
-		e.emitA("DATA DIVISION.")
-		e.emitA("WORKING-STORAGE SECTION.")
+	hasSymbols := symbolTable != nil && len(symbolTable) > 0
+	needsWorkingStorage := hasSymbols || e.needsTempInt
 
+	if !needsWorkingStorage {
+		e.builder.WriteString("\n")
+		return
+	}
+
+	e.emitA("DATA DIVISION.")
+	e.emitA("WORKING-STORAGE SECTION.")
+
+	if hasSymbols {
 		var names []string
 		for varName := range symbolTable {
 			names = append(names, varName)
@@ -103,18 +137,29 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 
 			switch info.Type {
 			case "string":
-				e.emitA(fmt.Sprintf("01 %s PIC X(30).", cobolName))
+				e.emitA(fmt.Sprintf("01 %s PIC X(%d).", cobolName, info.Width))
 			case "int":
-				e.emitA(fmt.Sprintf("01 %s PIC 9(6).", cobolName))
+				e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", cobolName, info.Width))
 			case "unknown", "undeclared":
-				// Do not emit declaration for invalid types found during parsing
+				e.addError("Emitter Warning: Skipping declaration for '%s' with unresolved type '%s'", varName, info.Type)
 				continue
 			default:
 				e.addError("Unsupported variable type '$s' for '%s' in Data Division", info.Type, varName)
 			}
 		}
-		e.builder.WriteString("\n") // Ensure PROCEDURE DIVISION starts on new line
+
 	}
+
+	// Declare temporary variables if needed
+	if e.needsTempInt {
+		if hasSymbols { // Add a newline if symbols were declared before temp vars
+			e.builder.WriteString("\n")
+		}
+		e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", tempIntName, defaultIntWidth))
+		// TODO: add temp string, etc. here later
+	}
+
+	e.builder.WriteString("\n") // Ensure PROCEDURE DIVISION starts on new line
 }
 
 func (e *Emitter) emitFooter() {
@@ -139,19 +184,27 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 		return
 	}
 
-	switch stmt.Value.(type) {
+	switch exprNode := stmt.Value.(type) {
 	case *StringLiteral:
 		// Identifiers are assumed (by parser checks) to resolve to printable types (string/int for now)
 		e.emitB(fmt.Sprintf(`DISPLAY "%s".`, valueStr))
 	case *Identifier, *IntegerLiteral:
 		e.emitB(fmt.Sprintf(`DISPLAY %s.`, valueStr))
 	case *BinaryExpression:
-		// TODO: Requires a temporary variable
-		// To implement later:
-		// 1. Declare a temporary variable (e.g., GRACE-TMP-INT-1 PIC 9(6)).
-		// 2. Emit: COMPUTE GRACE-TMP-INT-1 = expression.
-		// 3. Emit: DISPLAY GRACE-TMP-INT-1.
-		e.addError("Emitter Limitation: Cannot print the result of an arithmetic expression directly. Assign to a variable first.")
+		if exprNode.ResultType() == "int" {
+			if !e.needsTempInt {
+				// This should not happen if analyzeProgram ran correctly
+				e.addError("Emitter Internal Error: Attempting to print int expression but temp var flag not set.")
+				return
+			}
+			// Compute into temp var and display
+			e.emitB(fmt.Sprintf("COMPUTE %s = %s.", tempIntName, valueStr))
+			e.emitB(fmt.Sprintf("DISPLAY %s.", tempIntName))
+		} else {
+			// TODO: Handle printing other expression types (e.g. string concat) later
+			// For now just error
+			e.addError("Emitter Limitation: Cannot print results of expression with type %s", exprNode.ResultType())
+		}
 	default:
 		// Should not happen if parser validates printable types
 		e.addError("Print statement cannot display value of type %T", stmt.Value)

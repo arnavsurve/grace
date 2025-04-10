@@ -13,10 +13,12 @@ type Expression interface {
 	Node
 	expressionNode()
 	ResultType() string
+	ResultWidth() int
 }
 
 type SymbolInfo struct {
 	Type    string // string, int, etc
+	Width   int    // e.g. 6 for int(6) = max value of 999999, 15 for string(15), etc
 	IsConst bool
 }
 
@@ -64,32 +66,38 @@ func (rs *ReassignmentStatement) TokenLiteral() string { return rs.Token.Literal
 type Identifier struct {
 	Token        Token // IDENT
 	Value        string
+	Width        int
 	ResolvedType string // Store the resolved type during parsing/semantic analysis
 }
 
 func (i *Identifier) expressionNode()      {}
 func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
 func (i *Identifier) ResultType() string   { return i.ResolvedType }
+func (i *Identifier) ResultWidth() int     { return i.Width }
 
 // StringLiteral -> "hello"
 type StringLiteral struct {
 	Token Token
 	Value string
+	Width int
 }
 
 func (sl *StringLiteral) expressionNode()      {}
 func (sl *StringLiteral) TokenLiteral() string { return sl.Token.Literal }
 func (sl *StringLiteral) ResultType() string   { return "string" }
+func (sl *StringLiteral) ResultWidth() int     { return sl.Width }
 
 // IntegerLiteral -> 21
 type IntegerLiteral struct {
 	Token Token
 	Value int
+	Width int
 }
 
 func (il *IntegerLiteral) expressionNode()      {}
 func (il *IntegerLiteral) TokenLiteral() string { return il.Token.Literal }
 func (il *IntegerLiteral) ResultType() string   { return "int" }
+func (il *IntegerLiteral) ResultWidth() int     { return il.Width }
 
 type BinaryExpression struct {
 	Token    Token // +, -, *, /
@@ -100,6 +108,25 @@ type BinaryExpression struct {
 
 func (be *BinaryExpression) expressionNode()      {}
 func (be *BinaryExpression) TokenLiteral() string { return be.Token.Literal }
+
+func (be *BinaryExpression) ResultWidth() int {
+	leftWidth := be.Left.ResultWidth()
+	rightWidth := be.Right.ResultWidth()
+
+	switch be.Operator {
+	case "+", "-":
+		return max(leftWidth, rightWidth) + 1
+	case "*":
+		return leftWidth + rightWidth
+	case "/":
+		// Conservative for now.
+		// TODO: this does not reflect the potential size needed, especially for decimals
+		// Placeholder for now
+		return leftWidth
+	default:
+		return 0 // Unknown
+	}
+}
 
 // ResultType for BinaryExpression depends on operands and operator
 // For now, assume int + int -> int, etc. String ops can be added later
@@ -121,6 +148,7 @@ type GroupedExpression struct {
 
 func (ge *GroupedExpression) expressionNode()      {}
 func (ge *GroupedExpression) TokenLiteral() string { return ge.Token.Literal }
+
 func (ge *GroupedExpression) ResultType() string {
 	return ge.Expression.ResultType()
 }
