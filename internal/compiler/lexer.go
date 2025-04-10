@@ -39,10 +39,12 @@ func (l *Lexer) NextToken() Token {
 	switch l.ch {
 	case '/':
 		if l.peekChar() == '/' {
+			// Single line comment
 			l.readChar()
 			l.readComment()
 			return l.NextToken()
 		} else {
+			// Division
 			tok = Token{Type: TokenSlash, Literal: string(l.ch)}
 			l.readChar()
 			return tok
@@ -59,7 +61,20 @@ func (l *Lexer) NextToken() Token {
 		tok = Token{Type: TokenRParen, Literal: string(l.ch)}
 		l.readChar()
 		return tok
+	case '+':
+		tok = Token{Type: TokenPlus, Literal: string(l.ch)}
+		l.readChar()
+		return tok
+	case '-':
+		tok = Token{Type: TokenMinus, Literal: string(l.ch)}
+		l.readChar()
+		return tok
+	case '*':
+		tok = Token{Type: TokenAsterisk, Literal: string(l.ch)}
+		l.readChar()
+		return tok
 	case '"':
+		// readString consumes necessary chars and returns the token
 		return l.readString()
 	case ':':
 		if l.peekChar() == '=' {
@@ -69,10 +84,15 @@ func (l *Lexer) NextToken() Token {
 			tok = Token{Type: TokenAssignDefine, Literal: literal}
 			l.readChar()
 			return tok
+		} else {
+			tok = Token{Type: TokenColon, Literal: string(l.ch)}
+			l.readChar()
+			return tok
 		}
-		return Token{Type: TokenIllegal, Literal: string(l.ch)}
 	case 0:
+		// EOF
 		tok = Token{Type: TokenEOF, Literal: ""}
+		// Do NOT call l.readChar() here
 		return tok
 	default:
 		if isLetter(l.ch) {

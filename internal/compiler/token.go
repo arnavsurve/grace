@@ -4,10 +4,14 @@ type TokenType string
 
 const (
 	// Single character tokens
-	TokenLParen TokenType = "LPAREN" // (
-	TokenRParen TokenType = "RPAREN" // )
-	TokenAssign TokenType = "ASSIGN" // = (reassignment)
-	TokenSlash  TokenType = "SLASH"  // / (division)
+	TokenLParen   TokenType = "LPAREN"   // (
+	TokenRParen   TokenType = "RPAREN"   // )
+	TokenAssign   TokenType = "ASSIGN"   // = (reassignment)
+	TokenPlus     TokenType = "PLUS"     // +
+	TokenMinus    TokenType = "MINUS"    // -
+	TokenAsterisk TokenType = "ASTERISK" // *
+	TokenSlash    TokenType = "SLASH"    // / (division)
+	TokenColon    TokenType = "COLON"    // :
 
 	// Keywords
 	TokenPrint TokenType = "PRINT" // print
