@@ -116,7 +116,6 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 	needsWorkingStorage := hasSymbols || e.needsTempInt
 
 	if !needsWorkingStorage {
-		e.builder.WriteString("\n")
 		return
 	}
 
