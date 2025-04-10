@@ -1,5 +1,7 @@
 package compiler
 
+import "math"
+
 type Node interface {
 	TokenLiteral() string
 }
@@ -110,8 +112,46 @@ func (be *BinaryExpression) expressionNode()      {}
 func (be *BinaryExpression) TokenLiteral() string { return be.Token.Literal }
 
 func (be *BinaryExpression) ResultWidth() int {
+	// --- Constant Folding Check ---
+	leftLit, leftIsLit := be.Left.(*IntegerLiteral)
+	rightLit, rightIsLit := be.Right.(*IntegerLiteral)
+
+	if leftIsLit && rightIsLit {
+		// Both operands are literals, calculate the exact result width
+		leftVal := leftLit.Value
+		rightVal := rightLit.Value
+		var resultVal int
+
+		switch be.Operator {
+		case "+":
+			resultVal = leftVal + rightVal
+		case "-":
+			resultVal = leftVal - rightVal // Result could be negative? PIC 9 handles unsigned
+		case "*":
+			resultVal = leftVal * rightVal
+		case "/":
+			if rightVal == 0 {
+				// Parser already adds error, return a default/error width
+				return defaultIntWidth
+			}
+			resultVal = leftVal / rightVal
+		default:
+			return 0 // Unknown operator
+		}
+
+		return calculateWidthForValue(resultVal)
+	}
+
+	// Fallback to heuristics if not all literals
+
 	leftWidth := be.Left.ResultWidth()
 	rightWidth := be.Right.ResultWidth()
+
+	if leftWidth <= 0 || rightWidth <= 0 {
+		// This might happen if an operand's width couldn't be determined (e.g. undeclared var)
+		// Return a default or signal error? Default for now
+		return defaultIntWidth
+	}
 
 	switch be.Operator {
 	case "+", "-":
@@ -126,6 +166,21 @@ func (be *BinaryExpression) ResultWidth() int {
 	default:
 		return 0 // Unknown
 	}
+}
+
+// Helper function to calculate digits needed for a value (unsigned focus for PIC 9)
+func calculateWidthForValue(val int) int {
+	// Handle potential negative result from subtractions for PIC 9 (unsigned)
+	if val < 0 {
+		val = -val // Get absolute value
+	}
+
+	if val == 0 {
+		return 1
+	}
+
+	// Use Log10 for positive numbers
+	return int(math.Log10(float64(val))) + 1
 }
 
 // ResultType for BinaryExpression depends on operands and operator
