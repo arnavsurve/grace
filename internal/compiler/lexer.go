@@ -37,6 +37,16 @@ func (l *Lexer) NextToken() Token {
 	var tok Token
 
 	switch l.ch {
+	case '/':
+		if l.peekChar() == '/' {
+			l.readChar()
+			l.readComment()
+			return l.NextToken()
+		} else {
+			tok = Token{Type: TokenSlash, Literal: string(l.ch)}
+			l.readChar()
+			return tok
+		}
 	case '=':
 		tok = Token{Type: TokenAssign, Literal: string(l.ch)}
 		l.readChar()
@@ -90,6 +100,12 @@ func (l *Lexer) NextToken() Token {
 
 func (l *Lexer) skipWhitespace() {
 	for l.ch == ' ' || l.ch == '\n' || l.ch == '\t' || l.ch == '\r' {
+		l.readChar()
+	}
+}
+
+func (l *Lexer) readComment() {
+	for l.ch != '\n' && l.ch != 0 {
 		l.readChar()
 	}
 }

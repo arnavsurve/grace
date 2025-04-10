@@ -7,6 +7,7 @@ const (
 	TokenLParen TokenType = "LPAREN" // (
 	TokenRParen TokenType = "RPAREN" // )
 	TokenAssign TokenType = "ASSIGN" // = (reassignment)
+	TokenSlash  TokenType = "SLASH"  // / (division)
 
 	// Keywords
 	TokenPrint TokenType = "PRINT" // print
