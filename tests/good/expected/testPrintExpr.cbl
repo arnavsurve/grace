@@ -1,0 +1,19 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTPRINTEXPR.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 A PIC 9(6).
+       01 B PIC 9(6).
+
+       01 GRACE-TMP-INT PIC 9(6).
+
+       PROCEDURE DIVISION.
+           MOVE 100 TO A.
+           MOVE 23 TO B.
+           COMPUTE GRACE-TMP-INT = A + B.
+           DISPLAY GRACE-TMP-INT.
+           COMPUTE GRACE-TMP-INT = 5 * 4.
+           DISPLAY GRACE-TMP-INT.
+           DISPLAY A.
+           STOP RUN.
