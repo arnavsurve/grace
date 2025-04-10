@@ -1,0 +1,14 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTINT.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ANOTHER PIC 9(6).
+       01 COUNT PIC 9(6).
+
+       PROCEDURE DIVISION.
+           MOVE 123 TO COUNT.
+           DISPLAY COUNT.
+           MOVE 0 TO ANOTHER.
+           DISPLAY ANOTHER.
+           STOP RUN.
