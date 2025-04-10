@@ -11,6 +11,7 @@
        01 F PIC 9(6).
        01 G PIC 9(6).
        01 H PIC 9(6).
+       01 I PIC 9(6).
 
        PROCEDURE DIVISION.
            MOVE 10 TO A.
@@ -27,4 +28,6 @@
            DISPLAY G.
            COMPUTE H = (A + B) * 2.
            DISPLAY H.
+           COMPUTE I = (A * B) + 2.
+           DISPLAY I.
            STOP RUN.

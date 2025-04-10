@@ -18,3 +18,8 @@ print(g)
 // Test parentheses
 h := (a + b) * 2 // h should be (10 + 5) * 2 = 30
 print(h)
+
+// Test precedence
+i := a * b + 2 // i should be (10 * 5) + 2 = 52
+print(i)
+
