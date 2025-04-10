@@ -5,11 +5,6 @@ import (
 	"strconv"
 )
 
-const (
-	defaultIntWidth    = 6
-	defaultStringWidth = 30
-)
-
 type Parser struct {
 	l           *Lexer
 	curTok      Token
