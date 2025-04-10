@@ -32,20 +32,11 @@ func (e *Emitter) Errors() []string {
 	return e.errors
 }
 
-func (e *Emitter) Emit(program *Program) string {
-	// First pass to collect variables
-	for _, stmt := range program.Statements {
-		if assignment, ok := stmt.(*AssignmentStatement); ok {
-			switch assignment.Value.(type) {
-			case *StringLiteral:
-				e.variables[assignment.Name.Value] = "string"
-			case *IntegerLiteral:
-				e.variables[assignment.Name.Value] = "int"
-			}
-		}
-	}
+func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
+	// Use the symbol table from the parser to declare variables
+	e.variables = program.SymbolTable
 
-	e.emitHeader()
+	e.emitHeader(nameWithoutExt)
 	e.emitDataDivision()
 
 	for _, stmt := range program.Statements {
@@ -73,9 +64,10 @@ func (e *Emitter) emitB(line string) {
 
 // Emit Structure
 
-func (e *Emitter) emitHeader() {
+func (e *Emitter) emitHeader(nameWithoutExt string) {
 	e.emitA("IDENTIFICATION DIVISION.")
-	e.emitA("PROGRAM-ID. MAIN.")
+	programId := fmt.Sprintf("PROGRAM-ID. %s.", strings.ToUpper(nameWithoutExt))
+	e.emitA(programId)
 }
 
 func (e *Emitter) emitDataDivision() {
@@ -89,9 +81,9 @@ func (e *Emitter) emitDataDivision() {
 
 			switch typ {
 			case "string":
-				e.emitA(fmt.Sprintf("01 %s PIC X(255).", cobolName))
+				e.emitA(fmt.Sprintf("01 %s PIC X(30).", cobolName))
 			case "int":
-				e.emitA(fmt.Sprintf("01 %s PIC 9(9).", cobolName))
+				e.emitA(fmt.Sprintf("01 %s PIC 9(6).", cobolName))
 			}
 		}
 

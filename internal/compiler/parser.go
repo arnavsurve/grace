@@ -29,7 +29,7 @@ func (p *Parser) nextToken() {
 	p.peekTok = p.l.NextToken()
 }
 
-func (p *Parser) addError(format string, args ...interface{}) {
+func (p *Parser) addError(format string, args ...any) {
 	errMsg := fmt.Sprintf(format, args...)
 	p.errors = append(p.errors, errMsg)
 }
@@ -38,14 +38,20 @@ func (p *Parser) Errors() []string {
 	return p.errors
 }
 
+func (p *Parser) SymbolTable() map[string]string {
+	return p.symbolTable
+}
+
 func (p *Parser) isDeclared(varName string) bool {
 	_, exists := p.symbolTable[varName]
 	return exists
 }
 
 func (p *Parser) ParseProgram() *Program {
-	program := &Program{}
-	program.Statements = []Statement{}
+	program := &Program{
+		Statements:  []Statement{},
+		SymbolTable: p.symbolTable,
+	}
 
 	for p.curTok.Type != TokenEOF {
 		stmt := p.parseStatement()

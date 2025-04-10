@@ -16,7 +16,8 @@ type Expression interface {
 
 // Program is the root of every parsed file
 type Program struct {
-	Statements []Statement
+	Statements  []Statement
+	SymbolTable map[string]string
 }
 
 func (p *Program) TokenLiteral() string {
