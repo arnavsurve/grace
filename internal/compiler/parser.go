@@ -224,7 +224,7 @@ func (p *Parser) parseReassignmentStatement() Statement {
 	if declared && !isConst {
 		valueType := expr.ResultType()
 		if valueType != "unknown" && symbolInfo.Type != valueType {
-			p.addError("Semantic Error: Type mismatch - cannot assign value of type %s to variable '%s' (type %s)", valueType, varName, symbolInfo.Type)
+			p.addError("Semantic Error: Type mismatch - cannot assign value '%s' (type %s) to variable %s (type %s)", expr.TokenLiteral(), valueType, varName, symbolInfo.Type)
 		}
 	}
 
