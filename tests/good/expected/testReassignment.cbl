@@ -3,8 +3,8 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 MESSAGE PIC X(30).
        01 COUNTER PIC 9(6).
+       01 MESSAGE PIC X(30).
 
        PROCEDURE DIVISION.
            MOVE "Initial" TO MESSAGE.

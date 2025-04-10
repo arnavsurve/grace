@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -79,8 +80,15 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 		e.emitA("DATA DIVISION.")
 		e.emitA("WORKING-STORAGE SECTION.")
 
+		var names []string
+		for varName := range symbolTable {
+			names = append(names, varName)
+		}
+		sort.Strings(names)
+
 		// Declare variables
-		for varName, info := range symbolTable {
+		for _, varName := range names {
+			info := symbolTable[varName]
 			cobolName := strings.ToUpper(varName)
 
 			switch info.Type {
