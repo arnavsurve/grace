@@ -20,8 +20,8 @@ func main() {
 	nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 
 	// Validate extension
-	if filepath.Ext(filename) != ".grace" {
-		fmt.Println("Error: File must have a .grace extension")
+	if filepath.Ext(filename) != ".grc" {
+		fmt.Println("Error: File must have a .grc extension")
 		os.Exit(1)
 	}
 

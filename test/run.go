@@ -20,7 +20,7 @@ func main() {
 }
 
 func runGoodTests(dir string) {
-	files, _ := filepath.Glob(filepath.Join(dir, "*.grace"))
+	files, _ := filepath.Glob(filepath.Join(dir, "*.grc"))
 
 	for _, file := range files {
 		name := filepath.Base(file)
@@ -35,8 +35,10 @@ func runGoodTests(dir string) {
 			continue
 		}
 
+		nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
+
 		// Read expected output
-		expectedPath := filepath.Join(dir, "expected", name[:len(name)-6]+".cbl")
+		expectedPath := filepath.Join(dir, "expected", nameWithoutExt+".cbl")
 		expected, err := os.ReadFile(expectedPath)
 		if err != nil {
 			fmt.Println("❌ Missing expected output:", expectedPath)
@@ -44,7 +46,6 @@ func runGoodTests(dir string) {
 		}
 
 		// Determine actual output path (matching logic in main.go)
-		nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
 		outfilePath := filepath.Join("out", nameWithoutExt+".cbl")
 
 		// Read actual output
@@ -63,7 +64,7 @@ func runGoodTests(dir string) {
 }
 
 func runBadTests(dir string) {
-	files, _ := filepath.Glob(filepath.Join(dir, "*.grace"))
+	files, _ := filepath.Glob(filepath.Join(dir, "*.grc"))
 
 	for _, file := range files {
 		name := filepath.Base(file)
