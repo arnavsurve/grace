@@ -36,7 +36,7 @@ func runGoodTests(dir string) {
 		}
 
 		// Read expected output
-		expectedPath := filepath.Join(dir, "expected", name[:len(name)-6]+".cob")
+		expectedPath := filepath.Join(dir, "expected", name[:len(name)-6]+".cbl")
 		expected, err := os.ReadFile(expectedPath)
 		if err != nil {
 			fmt.Println("❌ Missing expected output:", expectedPath)
@@ -45,7 +45,7 @@ func runGoodTests(dir string) {
 
 		// Determine actual output path (matching logic in main.go)
 		nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
-		outfilePath := filepath.Join("out", nameWithoutExt+".cob")
+		outfilePath := filepath.Join("out", nameWithoutExt+".cbl")
 
 		// Read actual output
 		actual, err := os.ReadFile(outfilePath)

@@ -16,6 +16,8 @@ func main() {
 	}
 
 	filename := os.Args[1]
+	baseName := filepath.Base(filename)
+	nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 
 	// Validate extension
 	if filepath.Ext(filename) != ".grace" {
@@ -54,7 +56,7 @@ func main() {
 	fmt.Println()
 
 	emitter := compiler.NewEmitter()
-	cobolOutput := emitter.Emit(program)
+	cobolOutput := emitter.Emit(program, nameWithoutExt)
 
 	// Check for emitter errors
 	emitterErrors := emitter.Errors()
@@ -69,8 +71,6 @@ func main() {
 	fmt.Println("Generated COBOL:")
 	fmt.Println(cobolOutput)
 
-	baseName := filepath.Base(filename)
-	nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 	outDir := "out"
 
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -78,7 +78,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	outfileName := filepath.Join(outDir, nameWithoutExt+".cob")
+	outfileName := filepath.Join(outDir, nameWithoutExt+".cbl")
 
 	err = os.WriteFile(outfileName, []byte(cobolOutput), 0644)
 	if err != nil {
