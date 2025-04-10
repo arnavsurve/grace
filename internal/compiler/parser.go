@@ -108,6 +108,11 @@ func (p *Parser) parseDeclarationStatement() Statement { // Return Statement int
 			p.addError("Expected identifier after 'const', got %s", p.curTok.Type)
 			return nil
 		}
+
+		if p.peekTok.Type == TokenAssign { // Used '=' instead of ':='
+			p.addError("Invalid assignment for constant '%s'. Did you mean ':=' instead of '='?", p.curTok.Literal)
+			return nil
+		}
 	}
 
 	// Now curTok must be IDENT
