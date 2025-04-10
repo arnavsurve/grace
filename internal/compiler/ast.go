@@ -12,6 +12,7 @@ type Statement interface {
 type Expression interface {
 	Node
 	expressionNode()
+	ResultType() string
 }
 
 type SymbolInfo struct {
@@ -61,12 +62,14 @@ func (rs *ReassignmentStatement) statementNode()       {}
 func (rs *ReassignmentStatement) TokenLiteral() string { return rs.Token.Literal } // Literal is "="
 
 type Identifier struct {
-	Token Token // IDENT
-	Value string
+	Token        Token // IDENT
+	Value        string
+	ResolvedType string // Store the resolved type during parsing/semantic analysis
 }
 
 func (i *Identifier) expressionNode()      {}
 func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
+func (i *Identifier) ResultType() string   { return i.ResolvedType }
 
 // StringLiteral -> "hello"
 type StringLiteral struct {
@@ -76,6 +79,7 @@ type StringLiteral struct {
 
 func (sl *StringLiteral) expressionNode()      {}
 func (sl *StringLiteral) TokenLiteral() string { return sl.Token.Literal }
+func (sl *StringLiteral) ResultType() string   { return "string" }
 
 // IntegerLiteral -> 21
 type IntegerLiteral struct {
@@ -85,3 +89,38 @@ type IntegerLiteral struct {
 
 func (il *IntegerLiteral) expressionNode()      {}
 func (il *IntegerLiteral) TokenLiteral() string { return il.Token.Literal }
+func (il *IntegerLiteral) ResultType() string   { return "int" }
+
+type BinaryExpression struct {
+	Token    Token // +, -, *, /
+	Left     Expression
+	Operator string // +, -, *, /
+	Right    Expression
+}
+
+func (be *BinaryExpression) expressionNode()      {}
+func (be *BinaryExpression) TokenLiteral() string { return be.Token.Literal }
+
+// ResultType for BinaryExpression depends on operands and operator
+// For now, assume int + int -> int, etc. String ops can be added later
+func (be *BinaryExpression) ResultType() string {
+	leftType := be.Left.ResultType()
+	rightType := be.Right.ResultType()
+
+	if leftType == "int" && rightType == "int" {
+		return "int"
+	}
+
+	return "unknown"
+}
+
+type GroupedExpression struct {
+	Token      Token // '('
+	Expression Expression
+}
+
+func (ge *GroupedExpression) expressionNode()      {}
+func (ge *GroupedExpression) TokenLiteral() string { return ge.Token.Literal }
+func (ge *GroupedExpression) ResultType() string {
+	return ge.Expression.ResultType()
+}
