@@ -4,15 +4,17 @@ type TokenType string
 
 const (
 	// Single character tokens
-	TokenLParen TokenType = "LPAREN"
-	TokenRParen TokenType = "RPAREN"
+	TokenLParen TokenType = "LPAREN" // (
+	TokenRParen TokenType = "RPAREN" // )
+	TokenAssign TokenType = "ASSIGN" // = (reassignment)
 
 	// Keywords
-	TokenPrint TokenType = "PRINT"
+	TokenPrint TokenType = "PRINT" // print
+	TokenConst TokenType = "CONST" // const
 
 	// Literals
-	TokenString TokenType = "STRING"
-	TokenInt    TokenType = "INT"
+	TokenString TokenType = "STRING" // "..."
+	TokenInt    TokenType = "INT"    // 43
 
 	// Special
 	TokenEOF     TokenType = "EOF"

@@ -1,0 +1,18 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTREASSIGN.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 MESSAGE PIC X(30).
+       01 COUNTER PIC 9(6).
+
+       PROCEDURE DIVISION.
+           MOVE "Initial" TO MESSAGE.
+           DISPLAY MESSAGE.
+           MOVE "Changed" TO MESSAGE.
+           DISPLAY MESSAGE.
+           MOVE 10 TO COUNTER.
+           DISPLAY COUNTER.
+           MOVE 20 TO COUNTER.
+           DISPLAY COUNTER.
+           STOP RUN.
