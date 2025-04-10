@@ -1,0 +1,2 @@
+a := 10
+b := a / 0 // Error: Division by literal zero

@@ -337,13 +337,22 @@ func (p *Parser) parseTerm() Expression {
 			return nil
 		}
 
-		// --- Semantic Check ---
+		// --- Semantic Check: Type ---
 		leftType := leftExpr.ResultType()
 		rightType := rightExpr.ResultType()
 		if leftType != "int" || rightType != "int" {
 			p.addError("Semantic Error: Operator '%s' requires integer operands, got %s and %s", operator, leftType, rightType)
+			// Continue building node for further syntax checks
 		}
-		// TODO: Division by zero check
+
+		// --- Semantic Check: Division by Literal Zero ---
+		if operator == "/" {
+			if lit, ok := rightExpr.(*IntegerLiteral); ok {
+				if lit.Value == 0 {
+					p.addError("Semantic Error: Division by literal zero")
+				}
+			}
+		}
 
 		// Build the BinaryExpression node
 		leftExpr = &BinaryExpression{
