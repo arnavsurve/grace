@@ -71,6 +71,7 @@ func (e *Emitter) emitHeader(nameWithoutExt string) {
 	e.emitA("IDENTIFICATION DIVISION.")
 	programId := fmt.Sprintf("PROGRAM-ID. %s.", strings.ToUpper(nameWithoutExt))
 	e.emitA(programId)
+	e.builder.WriteString("\n")
 }
 
 func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {

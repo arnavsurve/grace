@@ -38,7 +38,7 @@ func (l *Lexer) NextToken() Token {
 
 	switch l.ch {
 	case '=':
-		tok = Token{Type: TokenConst, Literal: string(l.ch)}
+		tok = Token{Type: TokenAssign, Literal: string(l.ch)}
 		l.readChar()
 		return tok
 	case '(':
