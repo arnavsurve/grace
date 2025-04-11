@@ -1,0 +1,8 @@
+name := "Arnav"
+num := 2345
+num2 := 432
+
+print(name)
+print("asdf")
+print(num)
+print(num2)
