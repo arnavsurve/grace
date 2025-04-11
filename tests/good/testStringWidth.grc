@@ -1,0 +1,13 @@
+// Test string width inference
+
+short_str := "Hello"              // Width should be default 30 (max(30, 5))
+exact_str := "123456789012345678901234567890" // Width should be default 30 (max(30, 30))
+long_str  := "This string is intentionally longer than 30 characters." // Width should be 58 (max(30, 58))
+
+// Assigning a variable should use the source variable's width
+copy_long := long_str             // Width should inherit from long_str (58)
+
+print(short_str)
+print(exact_str)
+print(long_str)
+print(copy_long)

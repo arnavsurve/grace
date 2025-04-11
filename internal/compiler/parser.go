@@ -171,15 +171,16 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	var varWidth int
 
 	// Include variable width in symbol table
+	// We adhere to the default width unless the inferred width of the value exceeds that. In
+	// that case, we bind the width to the actual width of the value
 	// TODO: implement explicit width definition in explicit typing, for now we just implement the fallback default widths
 	switch val := stmt.Value.(type) {
 	case *IntegerLiteral:
 		literalWidth := lib.CalculateWidthForValue(val.Value)
 		varWidth = max(lib.DefaultIntWidth, literalWidth)
 	case *StringLiteral:
-		// TODO: similar to integer, take the max of the default string width versus the actual len of the declared str
-		// For now we just use the default
-		varWidth = lib.DefaultStringWidth
+		strLen := len(val.Value)
+		varWidth = max(lib.DefaultStringWidth, strLen)
 	case *Identifier:
 		// Look up identifier in symbol table
 		if info, ok := p.symbolTable[val.Value]; ok {
