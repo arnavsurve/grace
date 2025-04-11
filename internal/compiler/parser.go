@@ -83,7 +83,7 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseDeclarationStatement()
 	case TokenIdent:
 		switch p.peekTok.Type {
-		case TokenAssignDefine:
+		case TokenAssignDefine, TokenColon:
 			return p.parseDeclarationStatement()
 		case TokenAssign:
 			return p.parseReassignmentStatement()
@@ -111,7 +111,7 @@ func (p *Parser) parseStatement() Statement {
 func (p *Parser) parseDeclarationStatement() Statement {
 	stmt := &DeclarationStatement{}
 
-	// Handle optional 'const'
+	// 1. Handle optional 'const'
 	if p.curTok.Type == TokenConst {
 		stmt.IsConst = true
 		p.nextToken() // Consume 'const'
@@ -124,129 +124,237 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		}
 	}
 
-	// Expect current token is IDENT
+	// 2. Expect IDENT
 	if p.curTok.Type != TokenIdent {
-		p.addError("Internal Parser Error: Expected identifier for declaration start (or after const), got %s", p.curTok.Type)
+		if !stmt.IsConst {
+			p.addError("Internal Parser Error: Expected identifier for declaration start, got %s", p.curTok.Type)
+		}
+		if p.curTok.Type != TokenEOF {
+			p.nextToken()
+		}
 		return nil
 	}
 
 	identToken := p.curTok
 	varName := identToken.Literal
-	stmt.Name = &Identifier{Token: p.curTok, Value: varName}
+	stmt.Name = &Identifier{Token: identToken, Value: varName}
 
-	// Check for redeclaration before parsing the value
+	// 3. Check for Redeclaration (early check)
 	_, declared := p.getSymbolInfo(varName)
 	if declared {
 		p.addError("Semantic Error: Variable '%s' already declared", varName)
-		// We still continue parsing the rest of the statement to find more errors
-		// but we won't add it to the symbol table later
+		// Continue parsing to find more errors, but don't add to symbol table later
 	}
 
-	// Expect :=
-	if p.peekTok.Type != TokenAssignDefine {
-		// TODO: Handle specific error for const x = ... later if needed
-		// because a reassignment shouldn't have the const keyword
-		p.addError("Syntax Error: Expected ':=' after identifier '%s' in declaration, got '%s'", varName, p.peekTok.Literal)
+	// 4. Check for ':=' (Inferred) or ':' (Explicit) and consume tokens up to expression start
+	var explicitType string = ""
+	explicitWidth := 0
+	var useExplicitType bool = false
+
+	// We look at peekTok to decide the path
+	switch p.peekTok.Type {
+	case TokenColon:
+		// --- Explicit Type Path ---
+		useExplicitType = true
 		p.nextToken() // Consume IDENT
-		if p.curTok.Type != TokenEOF && p.curTok != p.peekTok {
+		p.nextToken() // Consume ':'
+
+		// Expect Type Literal
+		if p.curTok.Type != TokenTypeLiteral {
+			p.addError("Syntax Error: Expected type (e.g., 'int', 'string') after ':', got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+			if p.curTok.Type != TokenEOF {
+				p.nextToken()
+			} // Consume bad token
+			return nil
+		}
+		explicitType = p.curTok.Literal
+		// Validate if type is known
+		if explicitType != "int" && explicitType != "string" {
+			p.addError("Syntax Error: Unknown type '%s'", explicitType)
+			// Allow parsing to continue to find more errors, but type will be marked unknown later
+		}
+		p.nextToken() // Consume Type Literal
+
+		// Optionally check for width: '(' INT ')'
+		if p.curTok.Type == TokenLParen {
+			p.nextToken() // Consume '('
+			if p.curTok.Type != TokenInt {
+				p.addError("Syntax Error: Expected integer width inside parentheses after type '%s', got %s ('%s')", explicitType, p.curTok.Type, p.curTok.Literal)
+				if p.curTok.Type != TokenEOF {
+					p.nextToken()
+				} // Consume bad token
+				// Try to recover if possible? Maybe look for ')'? For now, return nil.
+				return nil
+			}
+			widthVal, err := strconv.Atoi(p.curTok.Literal)
+			if err != nil || widthVal <= 0 {
+				p.addError("Syntax Error: Invalid width specification '%s'. Width must be a positive integer.", p.curTok.Literal)
+				widthVal = 0 // Mark as invalid, parser will use defaults later if needed
+			}
+			explicitWidth = widthVal
+			p.nextToken() // Consume INT
+
+			if p.curTok.Type != TokenRParen {
+				p.addError("Syntax Error: Expected ')' after width specification, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+				if p.curTok.Type != TokenEOF {
+					p.nextToken()
+				} // Consume bad token
+				return nil
+			}
+			p.nextToken() // Consume ')'
+		} // End optional width parsing
+
+		// Expect '=' for assignment
+		if p.curTok.Type != TokenAssign {
+			p.addError("Syntax Error: Expected '=' after type specification for '%s', got %s ('%s')", varName, p.curTok.Type, p.curTok.Literal)
+			if p.curTok.Type != TokenEOF {
+				p.nextToken()
+			} // Consume bad token
+			return nil
+		}
+		stmt.Token = p.curTok // Store '=' token
+		p.nextToken()         // Consume '=', curTok is now start of expression
+
+	case TokenAssignDefine:
+		// --- Inferred Type Path ---
+		useExplicitType = false
+		p.nextToken()         // Consume IDENT. curTok is now ':='
+		stmt.Token = p.curTok // Store ':=' token
+		p.nextToken()         // Consume ':='. curTok is now start of expression
+
+	default:
+		// Neither ':' nor ':=' found after IDENT
+		p.addError("Syntax Error: Expected ':=' or ':' after identifier '%s' in declaration, got '%s' ('%s')", varName, p.peekTok.Type, p.peekTok.Literal)
+		p.nextToken() // Consume IDENT
+		if p.curTok.Type != TokenEOF {
 			p.nextToken()
-		} // Consume bad peek token
+		} // Consume the unexpected peek token
 		return nil
 	}
-	p.nextToken()         // Consume IDENT
-	stmt.Token = p.curTok // Store := token
-	p.nextToken()         // Consume :=, curTok is now start of expression
 
+	// 5. Parse the Expression (curTok is now the start of the expression)
 	expr := p.parseExpression()
 	if expr == nil {
-		// Error added by expression parser
+		// Error added by expression parser. Don't proceed.
 		return nil
 	}
 	stmt.Value = expr
+	// After parseExpression, curTok is the token *after* the expression
 
-	// --- Semantic Analysis ---
-	valueType := expr.ResultType() // Get type
-	varWidth := 0                  // Initialize width
+	// --- 6. Semantic Analysis & Symbol Table ---
+	valueType := expr.ResultType() // Get type from RHS expression
+	var finalWidth int = 0
+	var finalType string = "unknown" // Start assuming unknown
 
-	// --- Expression type is unknown (Error occured during parsing) ---
-	if valueType == "unknown" { // Check if errors already exist
-		// Error likely reported during expression parsing
-		// If not, add a generic one (but this indicates an internal issue)
-		if len(p.errors) == 0 {
-			p.addError("Internal Error: Expression resulted in 'unknown' type without specific error for '%s'", varName)
-		}
-		// --- Expression type is known (int or string) ---
-	} else {
-		// --- Calculate width ---
-
-		// Include variable width in symbol table
-		// We adhere to the default width unless the inferred width of the value exceeds that. In
-		// that case, we bind the width to the actual width of the value
-		// TODO: implement explicit width definition in explicit typing, for now we just implement the fallback default widths
-		switch valNode := stmt.Value.(type) {
-		case *IntegerLiteral:
-			literalWidth := lib.CalculateWidthForValue(valNode.Value)
-			varWidth = max(lib.DefaultIntWidth, literalWidth)
-		case *StringLiteral:
-			strLen := len(valNode.Value)
-			varWidth = max(lib.DefaultStringWidth, strLen)
-		case *Identifier:
-			// If assigning from another variable, the new variable should inherit the same width
-			if info, ok := p.symbolTable[valNode.Value]; ok {
-				varWidth = info.Width
-			} else {
-				p.addError("Internal Error: Could not determine width of identifier '%s'", valNode.Value)
-				if valueType == "int" {
-					varWidth = lib.DefaultIntWidth
-				} else {
-					varWidth = lib.DefaultStringWidth
-				}
-			}
-		case *BinaryExpression:
-			exprWidth := valNode.ResultWidth()
-
-			if valueType == "int" {
-				varWidth = max(lib.DefaultIntWidth, exprWidth)
-			} else if valueType == "string" {
-				varWidth = max(lib.DefaultStringWidth, exprWidth)
-			} else {
-				// Should not happen if valueType != "unknown"
-				p.addError("Internal Error: Unknown result type '%s' from BinaryExpression for '%s'", valueType, varName)
-				varWidth = 1 // Minimal valid PIC as fallback
-			}
-		default:
-			p.addError("Internal Error: Could not determine width of unknown identifier or literal.")
-			varWidth = 1 // Fallback
-		}
-
-		// --- Final Width Check & Symbol Table Addition ---
-
-		// Ensure width is valid (shouldn't be <= 0 now, but defensive check)
-		if varWidth <= 0 {
-			p.addError("Internal Warning: Calculated width was <= 0 for '%s', using 1.", varName)
-			varWidth = 1
-		}
-
-		// Add to symbol table ONLY if it's not a redeclaration
-		if !declared {
-			p.symbolTable[varName] = SymbolInfo{
-				Type:    valueType,
-				IsConst: stmt.IsConst,
-				Width:   varWidth,
-			}
-		} else {
-			// Was a redeclaration (error added earlier)
-			// Do not add to symbol table, but we still update the stmt.Name node in AST.
-			// This reflects the type/width of the current (invalid) assignment attempt.
-			// Might be useful for error reporting later, even though the var definition itself
-			// is shadowed/invalidated by the redeclaration.
-			stmt.Name.ResolvedType = valueType
-			stmt.Name.Width = varWidth
-		}
+	if valueType == "unknown" && len(p.errors) == 0 {
+		// If RHS expression parsing failed internally without adding an error
+		p.addError("Internal Error: Expression resulted in 'unknown' type without specific error for '%s'", varName)
 	}
 
-	// IMPORTANT: parseExpression consumes all its tokens.
-	// No nextToken() needed here.
+	// Determine finalType and finalWidth based on explicit vs inferred declaration
+	if useExplicitType {
+		// --- Explicit Declaration Logic ---
+		finalType = explicitType // Start with the explicitly declared type
+
+		// Check if declared type is valid (might have errored earlier but we check again)
+		if finalType != "int" && finalType != "string" {
+			// Error already added for unknown type. Mark as unknown.
+			finalType = "unknown"
+		}
+
+		// If the declared type is valid, check against the expression's type
+		if finalType != "unknown" && valueType != "unknown" && finalType != valueType {
+			// Allow int literal assign to float var later? For now, strict.
+			p.addError("Semantic Error: Type mismatch - cannot assign value of type %s to variable '%s' declared as %s", valueType, varName, finalType)
+			finalType = "unknown" // Mark as error state
+		}
+
+		// Determine Width
+		if finalType != "unknown" { // Only proceed if type is valid
+			if explicitWidth > 0 {
+				// Explicit width was provided
+				finalWidth = explicitWidth
+				// Check if LITERAL value fits (only for literals)
+				if litInt, ok := expr.(*IntegerLiteral); ok && finalType == "int" {
+					reqWidth := lib.CalculateWidthForValue(litInt.Value)
+					if reqWidth > finalWidth {
+						p.addError("Semantic Error: Integer literal %d requires width %d, but variable '%s' declared with width %d", litInt.Value, reqWidth, varName, finalWidth)
+					}
+				} else if litStr, ok := expr.(*StringLiteral); ok && finalType == "string" {
+					reqWidth := len(litStr.Value)
+					if reqWidth > finalWidth {
+						p.addError("Semantic Error: String literal with length %d exceeds declared width %d for variable '%s'", reqWidth, finalWidth, varName)
+					}
+				}
+			} else {
+				// Explicit type, but no explicit width - use default/inferred from expr
+				reqWidth := expr.ResultWidth() // Width needed by the expression
+				if finalType == "int" {
+					finalWidth = max(lib.DefaultIntWidth, reqWidth)
+				} else if finalType == "string" {
+					finalWidth = max(lib.DefaultStringWidth, reqWidth)
+				}
+				// No else needed here, finalType is known int/string
+			}
+		} else {
+			// finalType became unknown due to mismatch or bad explicit type
+			finalWidth = 0
+		}
+
+	} else { // Not useExplicitType
+		// --- Inferred Declaration Logic (`:=`) ---
+		if valueType != "unknown" {
+			finalType = valueType // Type is inferred from expression
+
+			// Determine Width (Inferred)
+			reqWidth := expr.ResultWidth()
+			if finalType == "int" {
+				finalWidth = max(lib.DefaultIntWidth, reqWidth)
+			} else if finalType == "string" {
+				finalWidth = max(lib.DefaultStringWidth, reqWidth)
+			} else {
+				// Should not happen if valueType != "unknown"
+				p.addError("Internal Error: Cannot determine default width for inferred unknown type '%s'", finalType)
+				finalType = "unknown" // Mark as error
+				finalWidth = 0
+			}
+		} else {
+			// valueType was unknown from expression parsing
+			finalType = "unknown"
+			finalWidth = 0
+		}
+	} // End of explicit vs inferred logic
+
+	// --- 7. Final Validation and Symbol Table Update ---
+
+	// Ensure width is valid before adding to symbol table
+	if finalType != "unknown" && finalWidth <= 0 {
+		p.addError("Internal Warning: Final width calculated as <= 0 for '%s' (type %s), setting to 1.", varName, finalType)
+		finalWidth = 1
+	}
+
+	// Add to symbol table ONLY if it's not a redeclaration AND type is known
+	if !declared && finalType != "unknown" {
+		p.symbolTable[varName] = SymbolInfo{
+			Type:    finalType,
+			IsConst: stmt.IsConst,
+			Width:   finalWidth,
+		}
+		// Also update the identifier node in the AST
+		stmt.Name.ResolvedType = finalType
+		stmt.Name.Width = finalWidth
+	} else {
+		// Handle cases where symbol wasn't added:
+		// - Redeclaration (error added earlier)
+		// - Error occurred determining type/width (error added earlier)
+		// Update AST node to reflect the (potentially invalid) outcome
+		stmt.Name.ResolvedType = finalType
+		stmt.Name.Width = finalWidth
+	}
+
+	// parseExpression consumed tokens including the last part of the expression.
+	// The current token (p.curTok) should now be whatever follows the expression
+	// (e.g., EOF, or the start of the next statement). No nextToken() needed here.
 	return stmt
 }
 
@@ -586,30 +694,46 @@ func (p *Parser) parsePrimary() Expression {
 // --- Primary/Helper Parsers (Consume their own tokens) ---
 
 func (p *Parser) parseIntegerLiteral() Expression {
-	// Same as before, ensure p.nextToken() is called
-	// We initialize default width here, TODO implement explicit width
-	lit := &IntegerLiteral{Token: p.curTok, Width: lib.DefaultIntWidth}
+	// Store the initial token for potential use in the AST node
+	token := p.curTok
+
 	val, err := strconv.ParseInt(p.curTok.Literal, 10, 64)
 	if err != nil {
 		p.addError("Syntax Error: Could not parse integer literal '%s': %v", p.curTok.Literal, err)
 		p.nextToken() // Consume bad token
 		return nil
 	}
-	lit.Value = int(val)
+
+	actualWidth := lib.CalculateWidthForValue(int(val))
+
+	lit := &IntegerLiteral{
+		Token: token,
+		Value: int(val),
+		Width: actualWidth,
+	}
+
 	p.nextToken() // Consume the integer token
 	return lit
 }
 
 func (p *Parser) parseStringLiteral() Expression {
-	// Same as before, ensure p.nextToken() is called
-	// We initialize default width here, TODO implement explicit width
-	expr := &StringLiteral{Token: p.curTok, Value: p.curTok.Literal, Width: lib.DefaultStringWidth}
+	// Store the token
+	token := p.curTok
+	value := p.curTok.Literal
+
+	actualWidth := len(value)
+
+	// Create the literal node
+	expr := &StringLiteral{
+		Token: token,
+		Value: value,
+		Width: actualWidth,
+	}
 	p.nextToken() // Consume the string token
 	return expr
 }
 
 func (p *Parser) parseIdentifier() Expression {
-	// Same as before, ensure p.nextToken() is called
 	varName := p.curTok.Literal
 	symbolInfo, declared := p.getSymbolInfo(varName)
 	expr := &Identifier{Token: p.curTok, Value: varName}

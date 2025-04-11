@@ -77,7 +77,9 @@ type Identifier struct {
 func (i *Identifier) expressionNode()      {}
 func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
 func (i *Identifier) ResultType() string   { return i.ResolvedType }
-func (i *Identifier) ResultWidth() int     { return i.Width }
+func (i *Identifier) ResultWidth() int {
+	return i.Width
+}
 
 // StringLiteral -> "hello"
 type StringLiteral struct {
@@ -101,7 +103,9 @@ type IntegerLiteral struct {
 func (il *IntegerLiteral) expressionNode()      {}
 func (il *IntegerLiteral) TokenLiteral() string { return il.Token.Literal }
 func (il *IntegerLiteral) ResultType() string   { return "int" }
-func (il *IntegerLiteral) ResultWidth() int     { return il.Width }
+func (il *IntegerLiteral) ResultWidth() int {
+	return il.Width
+}
 
 type BinaryExpression struct {
 	Token    Token // +, -, *, /
@@ -126,12 +130,14 @@ func (be *BinaryExpression) ResultWidth() int {
 		}
 
 		// --- Mixed types or variables ---
-		// Use the inferred/declared widths of the operands
 		leftWidth := be.Left.ResultWidth()
 		rightWidth := be.Right.ResultWidth()
 
-		if leftWidth <= 0 || rightWidth <= 0 {
-			return lib.DefaultStringWidth
+		if leftWidth <= 0 {
+			leftWidth = lib.DefaultStringWidth
+		}
+		if rightWidth <= 0 {
+			rightWidth = lib.DefaultStringWidth
 		}
 
 		return leftWidth + rightWidth
@@ -165,7 +171,7 @@ func (be *BinaryExpression) ResultWidth() int {
 			return lib.DefaultIntWidth // Unknown operator
 		}
 
-		return max(lib.DefaultIntWidth, lib.CalculateWidthForValue(resultVal))
+		return lib.CalculateWidthForValue(resultVal)
 	}
 
 	// Fallback to heuristics (for integers) if not all literals
@@ -173,9 +179,12 @@ func (be *BinaryExpression) ResultWidth() int {
 	leftWidth := be.Left.ResultWidth()
 	rightWidth := be.Right.ResultWidth()
 
-	if leftWidth <= 0 || rightWidth <= 0 {
-		// This might happen if an operand's width couldn't be determined (e.g. undeclared var)
-		return lib.DefaultIntWidth
+	// This might happen if an operand's width couldn't be determined (e.g. undeclared var)
+	if leftWidth <= 0 {
+		leftWidth = lib.DefaultIntWidth
+	}
+	if rightWidth <= 0 {
+		rightWidth = lib.DefaultIntWidth
 	}
 
 	switch be.Operator {

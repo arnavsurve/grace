@@ -195,42 +195,57 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 
 	switch exprNode := stmt.Value.(type) {
 	case *StringLiteral:
-		// Identifiers are assumed (by parser checks) to resolve to printable types (string/int for now)
-		escapedValue := strings.ReplaceAll(exprNode.Value, `"`, `""`)
-		e.emitB(fmt.Sprintf(`DISPLAY "%s".`, escapedValue))
+		if exprNode.Value == "" {
+			e.emitB("DISPLAY SPACE.") // Use COBOL figurative constant for blank lines rather than a 0 length alphanumeric
+		} else {
+			// Identifiers are assumed (by parser checks) to resolve to printable types (string/int for now)
+			escapedValue := strings.ReplaceAll(exprNode.Value, `"`, `""`)
+			e.emitB(fmt.Sprintf(`DISPLAY "%s".`, escapedValue))
+		}
 	case *IntegerLiteral:
 		e.emitB(fmt.Sprintf(`DISPLAY %d.`, exprNode.Value))
 	case *Identifier:
 		cobolName := strings.ToUpper(exprNode.Value)
 		e.emitB(fmt.Sprintf(`DISPLAY %s.`, cobolName))
 	case *BinaryExpression:
+		// Handle printing expressions (using temp vars)
 		if exprNode.ResultType() == "int" {
 			if !e.needsTempInt {
-				// This should not happen if analyzeProgram ran correctly
 				e.addError("Emitter Internal Error: Attempting to print int expression but temp var flag not set.")
 				return
 			}
-			// Compute into temp int var and display
 			exprStr := e.emitExpression(exprNode)
 			if exprStr == "" {
 				return
+			} // Error handled by emitExpression
+			// Check for simple literal case folded by parser
+			if _, isLit := exprNode.Left.(*IntegerLiteral); isLit && exprNode.Operator == "" { // Check if it became a literal after folding
+				e.emitB(fmt.Sprintf("DISPLAY %s.", exprStr)) // Display folded literal directly
+			} else {
+				e.emitB(fmt.Sprintf("COMPUTE %s = %s.", tempIntName, exprStr))
+				e.emitB(fmt.Sprintf("DISPLAY %s.", tempIntName))
 			}
-			e.emitB(fmt.Sprintf("COMPUTE %s = %s.", tempIntName, exprStr))
-			e.emitB(fmt.Sprintf("DISPLAY %s.", tempIntName))
 		} else if exprNode.ResultType() == "string" {
 			if !e.needsTempString {
 				e.addError("Emitter Internal Error: Printing string expression requires temp var, but flag not set.")
 				return
 			}
-
-			err := e.emitStringConcatenation(tempStringName, exprNode)
-			if err != nil {
-				// Error added by emitStringConcatenation
-				return
+			// Check for simple literal case folded by parser
+			if lit, isLit := exprNode.Left.(*StringLiteral); isLit && exprNode.Operator == "" {
+				if lit.Value == "" {
+					e.emitB("DISPLAY SPACE.")
+				} else {
+					escapedValue := strings.ReplaceAll(lit.Value, `"`, `""`)
+					e.emitB(fmt.Sprintf(`DISPLAY "%s".`, escapedValue))
+				}
+			} else {
+				err := e.emitStringConcatenation(tempStringName, exprNode)
+				if err != nil {
+					return
+				} // Error handled by emitStringConcatenation
+				e.emitB(fmt.Sprintf("DISPLAY %s.", tempStringName))
 			}
-			e.emitB(fmt.Sprintf("DISPLAY %s.", tempStringName))
 		} else {
-			// Type should be validated by parser, defensive check
 			e.addError("Emitter Limitation: Cannot print results of expression with unknown or unsupported type '%s'", exprNode.ResultType())
 		}
 	default:
@@ -399,19 +414,15 @@ func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *BinaryExp
 		return fmt.Errorf("no operands for string concatenation")
 	}
 
-	var operandsPart strings.Builder
-	operandsPart.WriteString("STRING ")
+	// Emit the start of the STRING statement
+	firstOperand := operands[0]
+	e.emitB(fmt.Sprintf("STRING %s DELIMITED BY SIZE", firstOperand)) // First operand starts the statement
 
-	for i, op := range operands {
-		if i > 0 {
-			operandsPart.WriteString(" ") // Space before subsequent operands
-		}
-		// Operands collected by collectStringOperands are already formatted (quoted literals or var names)
-		operandsPart.WriteString(op)
-		operandsPart.WriteString(" DELIMITED BY SIZE")
+	// Emit subsequent operands on new lines, indented
+	for i := 1; i < len(operands); i++ {
+		operand := operands[i]
+		e.emitB(fmt.Sprintf("%s DELIMITED BY SIZE", operand))
 	}
-
-	e.emitB(operandsPart.String())
 
 	e.emitB(fmt.Sprintf("INTO %s.", targetCobolVar))
 
@@ -422,8 +433,9 @@ func (e *Emitter) collectStringOperands(expr Expression, operands *[]string) err
 	switch node := expr.(type) {
 	case *StringLiteral:
 		litStr := e.emitExpression(node)
-		quotedLitStr := fmt.Sprintf(`"%s"`, litStr)
-		if litStr == "" {
+		escapedValue := strings.ReplaceAll(litStr, `"`, `""`)
+		quotedLitStr := fmt.Sprintf(`"%s"`, escapedValue)
+		if litStr == "" && escapedValue != "" {
 			return fmt.Errorf("failed to emit string literal")
 		}
 		*operands = append(*operands, quotedLitStr)
