@@ -14,21 +14,25 @@ import (
 // Scoped temp management or a flattened IR when this comes up
 
 const (
-	areaAIndent = "       "       // 7 spaces (column 8)
-	areaBIndent = "           "   // 11 spaces (column 12)
-	tempIntName = "GRACE-TMP-INT" // Temporary integer variable
+	areaAIndent     = "       "       // 7 spaces (column 8)
+	areaBIndent     = "           "   // 11 spaces (column 12)
+	tempIntName     = "GRACE-TMP-INT" // Temporary integer variable
+	tempStringName  = "GRACE-TMP-STR" // Temporary string variable
+	tempStringWidth = 256             // Max width for temp string var
 )
 
 type Emitter struct {
-	builder      strings.Builder
-	errors       []string
-	needsTempInt bool
+	builder         strings.Builder
+	errors          []string
+	needsTempInt    bool
+	needsTempString bool
 }
 
 func NewEmitter() *Emitter {
 	return &Emitter{
-		errors:       []string{},
-		needsTempInt: false,
+		errors:          []string{},
+		needsTempInt:    false,
+		needsTempString: false,
 	}
 }
 
@@ -45,17 +49,21 @@ func (e *Emitter) Errors() []string {
 // This will be called before emitting the main divisions
 func (e *Emitter) analyzeProgram(program *Program) {
 	e.needsTempInt = false // Reset for analysis
+	e.needsTempString = false
+
 	for _, stmt := range program.Statements {
 		if ps, ok := stmt.(*PrintStatement); ok {
-			if _, isBinary := ps.Value.(*BinaryExpression); isBinary {
-				// Check if the result type is needsTempInt
-				if ps.Value.ResultType() == "int" {
+			if binExpr, isBinary := ps.Value.(*BinaryExpression); isBinary {
+				if binExpr.ResultType() == "int" {
 					e.needsTempInt = true
-					break
+				} else if binExpr.ResultType() == "string" {
+					e.needsTempString = true
 				}
-				// TODO: check for other types needing temps (e.g. string concat)
+				// TODO: check for other complex expressions needing temps later
 			}
 		}
+		// TODO: Check assignments (future: complex RHS might need temps)
+		// For now, STRING ... INTO handles direct assignment of concat
 	}
 }
 
@@ -115,10 +123,10 @@ func (e *Emitter) emitHeader(nameWithoutExt string) {
 
 func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 	hasSymbols := symbolTable != nil && len(symbolTable) > 0
-	needsWorkingStorage := hasSymbols || e.needsTempInt
+	needsWorkingStorage := hasSymbols || e.needsTempInt || e.needsTempString
 
 	if !needsWorkingStorage {
-		return
+		return // Skip DATA DIVISION entirely if nothing to declare
 	}
 
 	e.emitA("DATA DIVISION.")
@@ -129,12 +137,17 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 		for varName := range symbolTable {
 			names = append(names, varName)
 		}
-		sort.Strings(names)
+		sort.Strings(names) // Ensure deterministic order
 
-		// Declare variables
+		// Declare user-defined variables
 		for _, varName := range names {
 			info := symbolTable[varName]
 			cobolName := strings.ToUpper(varName)
+
+			if info.Width <= 0 {
+				e.addError("Emitter Warning: Invalid width (%d) for variable '%s', using 1.", info.Width, varName)
+				info.Width = 1
+			}
 
 			switch info.Type {
 			case "string":
@@ -142,22 +155,27 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 			case "int":
 				e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", cobolName, info.Width))
 			case "unknown", "undeclared":
+				// Parser should prevent this, but warn if it slips through somehow
+				// Defensive programming and whatnot
 				e.addError("Emitter Warning: Skipping declaration for '%s' with unresolved type '%s'", varName, info.Type)
 				continue
 			default:
-				e.addError("Unsupported variable type '$s' for '%s' in Data Division", info.Type, varName)
+				e.addError("Unsupported variable type '%s' for '%s' in Data Division", info.Type, varName)
 			}
 		}
+	}
 
+	// Add a newline if symbols were declared AND temp vars are needed
+	if hasSymbols && (e.needsTempInt || e.needsTempString) {
+		e.builder.WriteString("\n")
 	}
 
 	// Declare temporary variables if needed
 	if e.needsTempInt {
-		if hasSymbols { // Add a newline if symbols were declared before temp vars
-			e.builder.WriteString("\n")
-		}
 		e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", tempIntName, lib.DefaultIntWidth))
-		// TODO: add temp string, etc. here later
+	}
+	if e.needsTempString {
+		e.emitA(fmt.Sprintf("01 %s PIC X(%d).", tempStringName, tempStringWidth))
 	}
 
 	e.builder.WriteString("\n") // Ensure PROCEDURE DIVISION starts on new line
@@ -175,22 +193,16 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 		return
 	}
 
-	// Use emitExpression to get the value representation
-	valueStr := e.emitExpression(stmt.Value)
-	if valueStr == "" {
-		// Error already added by emitExpression or value is inherently unprintable type
-		if len(e.errors) == 0 {
-			e.addError("Emitter Error: Cannot generate printable value for print statement")
-		}
-		return
-	}
-
 	switch exprNode := stmt.Value.(type) {
 	case *StringLiteral:
 		// Identifiers are assumed (by parser checks) to resolve to printable types (string/int for now)
-		e.emitB(fmt.Sprintf(`DISPLAY "%s".`, valueStr))
-	case *Identifier, *IntegerLiteral:
-		e.emitB(fmt.Sprintf(`DISPLAY %s.`, valueStr))
+		escapedValue := strings.ReplaceAll(exprNode.Value, `"`, `""`)
+		e.emitB(fmt.Sprintf(`DISPLAY "%s".`, escapedValue))
+	case *IntegerLiteral:
+		e.emitB(fmt.Sprintf(`DISPLAY %d.`, exprNode.Value))
+	case *Identifier:
+		cobolName := strings.ToUpper(exprNode.Value)
+		e.emitB(fmt.Sprintf(`DISPLAY %s.`, cobolName))
 	case *BinaryExpression:
 		if exprNode.ResultType() == "int" {
 			if !e.needsTempInt {
@@ -198,13 +210,28 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 				e.addError("Emitter Internal Error: Attempting to print int expression but temp var flag not set.")
 				return
 			}
-			// Compute into temp var and display
-			e.emitB(fmt.Sprintf("COMPUTE %s = %s.", tempIntName, valueStr))
+			// Compute into temp int var and display
+			exprStr := e.emitExpression(exprNode)
+			if exprStr == "" {
+				return
+			}
+			e.emitB(fmt.Sprintf("COMPUTE %s = %s.", tempIntName, exprStr))
 			e.emitB(fmt.Sprintf("DISPLAY %s.", tempIntName))
+		} else if exprNode.ResultType() == "string" {
+			if !e.needsTempString {
+				e.addError("Emitter Internal Error: Printing string expression requires temp var, but flag not set.")
+				return
+			}
+
+			err := e.emitStringConcatenation(tempStringName, exprNode)
+			if err != nil {
+				// Error added by emitStringConcatenation
+				return
+			}
+			e.emitB(fmt.Sprintf("DISPLAY %s.", tempStringName))
 		} else {
-			// TODO: Handle printing other expression types (e.g. string concat) later
-			// For now just error
-			e.addError("Emitter Limitation: Cannot print results of expression with type %s", exprNode.ResultType())
+			// Type should be validated by parser, defensive check
+			e.addError("Emitter Limitation: Cannot print results of expression with unknown or unsupported type '%s'", exprNode.ResultType())
 		}
 	default:
 		// Should not happen if parser validates printable types
@@ -219,26 +246,37 @@ func (e *Emitter) emitDeclaration(stmt *DeclarationStatement) {
 	}
 
 	varName := strings.ToUpper(stmt.Name.Value)
-	valueStr := e.emitExpression(stmt.Value)
 
-	if valueStr == "" {
-		e.addError("Emitter Error: Could not generate code for value assigned to '%s'", varName)
-		return
-	}
-
-	// Decide between MOVE and COMPUTE based on the Value's type
 	switch v := stmt.Value.(type) {
-	// Simple values of variable references use MOVE
-	case *IntegerLiteral, *Identifier:
-		e.emitB(fmt.Sprintf(`MOVE %s TO %s.`, valueStr, varName))
+	case *IntegerLiteral:
+		e.emitB(fmt.Sprintf(`MOVE %d TO %s.`, v.Value, varName))
 	case *StringLiteral:
-		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s.`, valueStr, varName))
+		escapedValue := strings.ReplaceAll(v.Value, `"`, `""`)
+		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s.`, escapedValue, varName))
+	case *Identifier:
+		// Assigning one variable to another
+		sourceVarName := strings.ToUpper(v.Value)
+		e.emitB(fmt.Sprintf(`MOVE %s TO %s.`, sourceVarName, varName))
 	case *BinaryExpression:
-		// Arithmetic expressions use COMPUTE
-		e.emitB(fmt.Sprintf("COMPUTE %s = %s.", varName, valueStr))
+		resultType := v.ResultType()
+		if resultType == "int" {
+			// Arithmetic expressions use COMPUTE
+			exprStr := e.emitExpression(v)
+			if exprStr == "" {
+				return
+			}
+			e.emitB(fmt.Sprintf("COMPUTE %s = %s.", varName, exprStr))
+		} else if resultType == "string" {
+			// String concatenation uses STRING ... INTO
+			err := e.emitStringConcatenation(varName, v)
+			if err != nil {
+				return
+			}
+		} else {
+			e.addError("Declaration cannot assign result of expression with type '%s' to '%s'", resultType, varName)
+		}
 	default:
-		// Should not hapen if parser validates expression types
-		e.addError("Declaration statement cannot assign value of type %T to %s", v, varName)
+		e.addError("Declaration statement cannot assign value of type %T to '%s'", v, varName)
 	}
 }
 
@@ -249,70 +287,175 @@ func (e *Emitter) emitReassignment(stmt *ReassignmentStatement) {
 	}
 
 	varName := strings.ToUpper(stmt.Name.Value)
-	valueStr := e.emitExpression(stmt.Value)
 
-	if valueStr == "" {
-		e.addError("Emitter Error: Could not generate code for value reassigned to '%s'", varName)
-		return
-	}
-
-	// Semantic checks (like const assignment, type mismatch) are done by the parser.
-	// The emitter assumes the AST is valid at this point.
-	// Decide between MOVE and COMPUTE based on the Value's type.
-	switch stmt.Value.(type) {
-	case *IntegerLiteral, *Identifier:
-		e.emitB(fmt.Sprintf(`MOVE %s TO %s.`, valueStr, varName))
+	// Semantic checks (const, type mismatch) are handled by parser. Emitter assumes validity.
+	switch v := stmt.Value.(type) {
+	case *IntegerLiteral:
+		e.emitB(fmt.Sprintf(`MOVE %d TO %s.`, v.Value, varName))
 	case *StringLiteral:
-		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s.`, valueStr, varName))
+		escapedValue := strings.ReplaceAll(v.Value, `"`, `""`)
+		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s.`, escapedValue, varName))
+	case *Identifier:
+		// Reassigning one variable to another
+		sourceVarName := strings.ToUpper(v.Value)
+		e.emitB(fmt.Sprintf(`MOVE %s TO %s.`, sourceVarName, varName))
 	case *BinaryExpression:
-		e.emitB(fmt.Sprintf("COMPUTE %s = %s.", varName, valueStr))
+		resultType := v.ResultType()
+		if resultType == "int" {
+			exprStr := e.emitExpression(v)
+			if exprStr == "" {
+				if len(e.errors) == 0 {
+					e.addError("Emitter Error: Could not generate arithmetic expression for reassignment to '%s'", varName)
+				}
+				return
+			}
+			e.emitB(fmt.Sprintf("COMPUTE %s = %s.", varName, exprStr))
+		} else if resultType == "string" {
+			err := e.emitStringConcatenation(varName, v)
+			if err != nil {
+				return
+			}
+		} else {
+			e.addError("Reassignment cannot assign result of expression with type '%s' to '%s'", resultType, varName)
+		}
 	default:
 		// Should not hapen if parser validates expression types
-		e.addError("Reassignment statement cannot assign values of type %T to %s", stmt.Value, varName)
+		e.addError("Reassignment statement cannot assign values of type %T to '%s'", v, varName)
 	}
 }
 
 // emitExpression converts an Expression AST node into its COBOL string representation
+// suitable for use withing COMPUTE or as part of STRING.
 func (e *Emitter) emitExpression(expr Expression) string {
 	switch node := expr.(type) {
 	case *Identifier:
-		// Assumes parser checked declaration and resolved type. Return uppercase name.
 		return strings.ToUpper(node.Value)
 	case *IntegerLiteral:
-		// Return the integer value as a string
 		return fmt.Sprintf("%d", node.Value)
 	case *StringLiteral:
 		// Return the string literal enclosed in quotes
 		// TODO: Handle potential quotes within the string itself
-		return fmt.Sprintf("%s", node.Value)
+		// NOTE: GnuCOBOL generally handles single quotes inside double quotes. We can assume simple strings for now.
+		escapedValue := strings.ReplaceAll(node.Value, `"`, `""`)
+		return fmt.Sprintf("%s", escapedValue)
 	case *BinaryExpression:
 		// Recursively emit left and right operands and combine with the operator
+		// This is primarily for COMPUTE. STRING needs different handling.
 		leftStr := e.emitExpression(node.Left)
 		rightStr := e.emitExpression(node.Right)
 		if leftStr == "" || rightStr == "" {
 			// Error occurred in recursive call
-			e.addError("Emitter Error: Failed to emit operands for binary expression")
+			if len(e.errors) == 0 {
+				e.addError("Emitter Error: Failed to emit operands for binary expression")
+			}
 			return ""
 		}
 		if _, ok := node.Left.(*BinaryExpression); ok {
 			leftStr = fmt.Sprintf("(%s)", leftStr)
+		} else if _, ok := node.Left.(*GroupedExpression); ok {
+			leftStr = fmt.Sprintf("(%s)", leftStr)
 		}
 		if _, ok := node.Right.(*BinaryExpression); ok {
 			rightStr = fmt.Sprintf("(%s)", rightStr)
+		} else if _, ok := node.Right.(*GroupedExpression); ok {
+			rightStr = fmt.Sprintf("(%s)", rightStr)
 		}
 
-		return fmt.Sprintf("%s %s %s", leftStr, node.Operator, rightStr)
-	// case *GroupedExpression:
-	// 	// For COBOL emission, we often don't need explicit parens if COMPUTE handles precedence.
-	// 	// However, to be safe/for clarity, we can add them.
-	// 	innerStr := e.emitExpression(node.Expression)
-	// 	if innerStr == "" {
-	// 		return ""
-	// 	}
-	// 	return fmt.Sprintf("(%s)", innerStr)
+		if node.ResultType() == "int" {
+			return fmt.Sprintf("%s %s %s", leftStr, node.Operator, rightStr)
+		} else if node.ResultType() == "string" {
+			// We don't return a single string for concat here.
+			// The caller (emitDeclaration/Reassignment/Print) handles it via emitStringConcatenation.
+			return ""
+		} else {
+			e.addError("Emitter Error: Cannot emit code for BinaryExpression with unknown result type")
+			return ""
+		}
+	case *GroupedExpression:
+		// Return the string for the inner expression. Outer emitExpression calls will add parens if needed
+		if node.Expression == nil {
+			e.addError("Internal Emitter Error: GroupedExpression has nil inner expression.")
+			return ""
+		}
+		return e.emitExpression(node.Expression) // Just return inner
 	default:
 		// This case should ideally not be reached if the parser only produces known expression types
 		e.addError("Emitter Error: Cannot emit code for unknown expression type %T", expr)
 		return ""
 	}
+}
+
+// emitStringConcatenation generates a COBOL STRING statement.
+// It flattens the potentially nested BinaryExpression tree for concat.
+func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *BinaryExpression) error {
+	operands := []string{}
+	err := e.collectStringOperands(expr, &operands)
+	if err != nil {
+		return err
+	}
+
+	if len(operands) == 0 {
+		e.addError("Internal Emitter Error: No operands found for string concatenation")
+		return fmt.Errorf("no operands for string concatenation")
+	}
+
+	var operandsPart strings.Builder
+	operandsPart.WriteString("STRING ")
+
+	for i, op := range operands {
+		if i > 0 {
+			operandsPart.WriteString(" ") // Space before subsequent operands
+		}
+		// Operands collected by collectStringOperands are already formatted (quoted literals or var names)
+		operandsPart.WriteString(op)
+		operandsPart.WriteString(" DELIMITED BY SIZE")
+	}
+
+	e.emitB(operandsPart.String())
+
+	e.emitB(fmt.Sprintf("INTO %s.", targetCobolVar))
+
+	return nil
+}
+
+func (e *Emitter) collectStringOperands(expr Expression, operands *[]string) error {
+	switch node := expr.(type) {
+	case *StringLiteral:
+		litStr := e.emitExpression(node)
+		quotedLitStr := fmt.Sprintf(`"%s"`, litStr)
+		if litStr == "" {
+			return fmt.Errorf("failed to emit string literal")
+		}
+		*operands = append(*operands, quotedLitStr)
+	case *Identifier:
+		// Get the uppercase variable name
+		identStr := e.emitExpression(node)
+		if identStr == "" {
+			return fmt.Errorf("failed to emit indentifier")
+		}
+		*operands = append(*operands, identStr)
+	case *BinaryExpression:
+		if node.Operator == "+" && node.ResultType() == "string" {
+			// Recursively collect form left, then right
+			err := e.collectStringOperands(node.Left, operands)
+			if err != nil {
+				return err
+			}
+			err = e.collectStringOperands(node.Right, operands)
+			if err != nil {
+				return err
+			}
+		} else {
+			// Should be caught by parser, defensive check
+			e.addError("Internal Emitter Error: Unexpected operator '%s' or type in string concatenation traversal", node.Operator)
+			return fmt.Errorf("invalid node in string concatenation")
+		}
+	case *GroupedExpression:
+		// Recurse into the grouped expression
+		return e.collectStringOperands(node.Expression, operands)
+	default:
+		e.addError("Internal Emitter Error: Unexpected expression type %T encountered during string concatenation", expr)
+		return fmt.Errorf("unexpected node type %T", expr)
+	}
+	return nil
 }

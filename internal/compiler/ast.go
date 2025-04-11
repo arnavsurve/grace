@@ -114,6 +114,30 @@ func (be *BinaryExpression) expressionNode()      {}
 func (be *BinaryExpression) TokenLiteral() string { return be.Token.Literal }
 
 func (be *BinaryExpression) ResultWidth() int {
+	// Calculate string concatenation width
+	if be.ResultType() == "string" {
+		// --- Constant Folding Check ---
+		leftLit, leftIsLit := be.Left.(*StringLiteral)
+		rightLit, rightIsLit := be.Right.(*StringLiteral)
+
+		if leftIsLit && rightIsLit {
+			// Both operants are string literals
+			return len(leftLit.Value) + len(rightLit.Value)
+		}
+
+		// --- Mixed types or variables ---
+		// Use the inferred/declared widths of the operands
+		leftWidth := be.Left.ResultWidth()
+		rightWidth := be.Right.ResultWidth()
+
+		if leftWidth <= 0 || rightWidth <= 0 {
+			return lib.DefaultStringWidth
+		}
+
+		return leftWidth + rightWidth
+	}
+
+	// Integer width calculation
 	// --- Constant Folding Check ---
 	leftLit, leftIsLit := be.Left.(*IntegerLiteral)
 	rightLit, rightIsLit := be.Right.(*IntegerLiteral)
@@ -138,20 +162,19 @@ func (be *BinaryExpression) ResultWidth() int {
 			}
 			resultVal = leftVal / rightVal
 		default:
-			return 0 // Unknown operator
+			return lib.DefaultIntWidth // Unknown operator
 		}
 
-		return lib.CalculateWidthForValue(resultVal)
+		return max(lib.DefaultIntWidth, lib.CalculateWidthForValue(resultVal))
 	}
 
-	// Fallback to heuristics if not all literals
+	// Fallback to heuristics (for integers) if not all literals
 
 	leftWidth := be.Left.ResultWidth()
 	rightWidth := be.Right.ResultWidth()
 
 	if leftWidth <= 0 || rightWidth <= 0 {
 		// This might happen if an operand's width couldn't be determined (e.g. undeclared var)
-		// Return a default or signal error? Default for now
 		return lib.DefaultIntWidth
 	}
 
@@ -164,9 +187,10 @@ func (be *BinaryExpression) ResultWidth() int {
 		// Conservative for now.
 		// TODO: this does not reflect the potential size needed, especially for decimals
 		// Placeholder for now
+		// NOTE: result width is generally <= dividend width
 		return leftWidth
 	default:
-		return 0 // Unknown
+		return lib.DefaultIntWidth // Unknown operator
 	}
 }
 
@@ -176,10 +200,18 @@ func (be *BinaryExpression) ResultType() string {
 	leftType := be.Left.ResultType()
 	rightType := be.Right.ResultType()
 
-	if leftType == "int" && rightType == "int" {
+	if leftType == "int" && rightType == "int" && be.Operator != "+" {
+		// Arithmetic operators that are not '+' only work on ints
+		// TODO: floats as well
 		return "int"
+	} else if leftType == "int" && rightType == "int" && be.Operator == "+" {
+		return "int"
+	} else if leftType == "string" && rightType == "string" && be.Operator == "+" {
+		return "string"
 	}
 
+	// Mismatched types or unsupported operator for types will be caught by parser
+	// Return unknown here, parser will add the specific error
 	return "unknown"
 }
 
@@ -193,4 +225,12 @@ func (ge *GroupedExpression) TokenLiteral() string { return ge.Token.Literal }
 
 func (ge *GroupedExpression) ResultType() string {
 	return ge.Expression.ResultType()
+}
+
+func (ge *GroupedExpression) ResultWidth() int {
+	if ge.Expression == nil {
+		// Parser bug
+		return 0 // TODO: consider default or error signaling
+	}
+	return ge.Expression.ResultWidth()
 }

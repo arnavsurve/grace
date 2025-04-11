@@ -124,26 +124,31 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		}
 	}
 
-	// Current token must be IDENT now
+	// Expect current token is IDENT
 	if p.curTok.Type != TokenIdent {
 		p.addError("Internal Parser Error: Expected identifier for declaration start (or after const), got %s", p.curTok.Type)
 		return nil
 	}
-	stmt.Name = &Identifier{Token: p.curTok, Value: p.curTok.Literal}
-	varName := stmt.Name.Value
 
-	// Check for redeclaration *before* parsing the value
+	identToken := p.curTok
+	varName := identToken.Literal
+	stmt.Name = &Identifier{Token: p.curTok, Value: varName}
+
+	// Check for redeclaration before parsing the value
 	_, declared := p.getSymbolInfo(varName)
 	if declared {
 		p.addError("Semantic Error: Variable '%s' already declared", varName)
+		// We still continue parsing the rest of the statement to find more errors
+		// but we won't add it to the symbol table later
 	}
 
 	// Expect :=
 	if p.peekTok.Type != TokenAssignDefine {
 		// TODO: Handle specific error for const x = ... later if needed
+		// because a reassignment shouldn't have the const keyword
 		p.addError("Syntax Error: Expected ':=' after identifier '%s' in declaration, got '%s'", varName, p.peekTok.Literal)
 		p.nextToken() // Consume IDENT
-		if p.curTok.Type != TokenEOF {
+		if p.curTok.Type != TokenEOF && p.curTok != p.peekTok {
 			p.nextToken()
 		} // Consume bad peek token
 		return nil
@@ -160,58 +165,88 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	stmt.Value = expr
 
 	// --- Semantic Analysis ---
-	valueType := expr.ResultType()
-	if valueType == "unknown" && len(p.errors) > 0 { // Check if errors already exist
+	valueType := expr.ResultType() // Get type
+	varWidth := 0                  // Initialize width
+
+	// --- Expression type is unknown (Error occured during parsing) ---
+	if valueType == "unknown" { // Check if errors already exist
 		// Error likely reported during expression parsing
-	} else if valueType == "unknown" {
-		// If no previous errors, the type resolution failed silently?
-		p.addError("Semantic Error: Could not determine type for expression assigned to '%s'", varName)
-	}
-
-	var varWidth int
-
-	// Include variable width in symbol table
-	// We adhere to the default width unless the inferred width of the value exceeds that. In
-	// that case, we bind the width to the actual width of the value
-	// TODO: implement explicit width definition in explicit typing, for now we just implement the fallback default widths
-	switch val := stmt.Value.(type) {
-	case *IntegerLiteral:
-		literalWidth := lib.CalculateWidthForValue(val.Value)
-		varWidth = max(lib.DefaultIntWidth, literalWidth)
-	case *StringLiteral:
-		strLen := len(val.Value)
-		varWidth = max(lib.DefaultStringWidth, strLen)
-	case *Identifier:
-		// Look up identifier in symbol table
-		if info, ok := p.symbolTable[val.Value]; ok {
-			varWidth = info.Width
-		} else {
-			p.addError("Internal Error: Could not determine width of identifier '%s'", val.Value)
-			varWidth = 0 // fallback or skip insertion
+		// If not, add a generic one (but this indicates an internal issue)
+		if len(p.errors) == 0 {
+			p.addError("Internal Error: Expression resulted in 'unknown' type without specific error for '%s'", varName)
 		}
-	case *BinaryExpression:
-		varWidth = val.ResultWidth()
-	default:
-		p.addError("Internal Error: Could not determine width of unknown identifier or literal.")
-	}
+		// --- Expression type is known (int or string) ---
+	} else {
+		// --- Calculate width ---
 
-	// Add to symbol table only if not previously declared and type is known
-	if !declared && valueType != "unknown" {
-		// Ensure width is at least 1 if calculation somehow resulted in 0 (except for error cases -> !"unknown")
-		if varWidth <= 0 && valueType != "unknown" {
+		// Include variable width in symbol table
+		// We adhere to the default width unless the inferred width of the value exceeds that. In
+		// that case, we bind the width to the actual width of the value
+		// TODO: implement explicit width definition in explicit typing, for now we just implement the fallback default widths
+		switch valNode := stmt.Value.(type) {
+		case *IntegerLiteral:
+			literalWidth := lib.CalculateWidthForValue(valNode.Value)
+			varWidth = max(lib.DefaultIntWidth, literalWidth)
+		case *StringLiteral:
+			strLen := len(valNode.Value)
+			varWidth = max(lib.DefaultStringWidth, strLen)
+		case *Identifier:
+			// If assigning from another variable, the new variable should inherit the same width
+			if info, ok := p.symbolTable[valNode.Value]; ok {
+				varWidth = info.Width
+			} else {
+				p.addError("Internal Error: Could not determine width of identifier '%s'", valNode.Value)
+				if valueType == "int" {
+					varWidth = lib.DefaultIntWidth
+				} else {
+					varWidth = lib.DefaultStringWidth
+				}
+			}
+		case *BinaryExpression:
+			exprWidth := valNode.ResultWidth()
+
+			if valueType == "int" {
+				varWidth = max(lib.DefaultIntWidth, exprWidth)
+			} else if valueType == "string" {
+				varWidth = max(lib.DefaultStringWidth, exprWidth)
+			} else {
+				// Should not happen if valueType != "unknown"
+				p.addError("Internal Error: Unknown result type '%s' from BinaryExpression for '%s'", valueType, varName)
+				varWidth = 1 // Minimal valid PIC as fallback
+			}
+		default:
+			p.addError("Internal Error: Could not determine width of unknown identifier or literal.")
+			varWidth = 1 // Fallback
+		}
+
+		// --- Final Width Check & Symbol Table Addition ---
+
+		// Ensure width is valid (shouldn't be <= 0 now, but defensive check)
+		if varWidth <= 0 {
 			p.addError("Internal Warning: Calculated width was <= 0 for '%s', using 1.", varName)
-			varWidth = 1 // By doing this, we ensure a valid PIC clause
+			varWidth = 1
 		}
-		p.symbolTable[varName] = SymbolInfo{Type: valueType, IsConst: stmt.IsConst, Width: varWidth}
 
-		if stmt.Name != nil {
+		// Add to symbol table ONLY if it's not a redeclaration
+		if !declared {
+			p.symbolTable[varName] = SymbolInfo{
+				Type:    valueType,
+				IsConst: stmt.IsConst,
+				Width:   varWidth,
+			}
+		} else {
+			// Was a redeclaration (error added earlier)
+			// Do not add to symbol table, but we still update the stmt.Name node in AST.
+			// This reflects the type/width of the current (invalid) assignment attempt.
+			// Might be useful for error reporting later, even though the var definition itself
+			// is shadowed/invalidated by the redeclaration.
 			stmt.Name.ResolvedType = valueType
+			stmt.Name.Width = varWidth
 		}
-		stmt.Name.Width = varWidth
 	}
 
 	// IMPORTANT: parseExpression consumes all its tokens.
-	// curTok should be the token after the expression. No nextToken() needed here.
+	// No nextToken() needed here.
 	return stmt
 }
 
@@ -315,7 +350,7 @@ func (p *Parser) parsePrintStatement() Statement {
 
 // parseExpression: Handles lowest precedence (addition, subtraction)
 func (p *Parser) parseExpression() Expression {
-	leftExpr := p.parseTerm() // Parse the left operand (must be a term)
+	leftExpr := p.parseTerm() // Parse the left operand (must be a term - multiplication, division)
 	if leftExpr == nil {
 		return nil
 	}
@@ -336,46 +371,94 @@ func (p *Parser) parseExpression() Expression {
 		// --- Semantic Check ---
 		leftType := leftExpr.ResultType()
 		rightType := rightExpr.ResultType()
-		if leftType != "int" || rightType != "int" {
-			p.addError("Semantic Error: Operator '%s' requires integer operands, got %s and %s", operator, leftType, rightType)
-			// Don't return nil here, allow AST build for further syntax checks,
-			// but ResultType will be "unknown"
+
+		// Check for valid operations
+		isValidOp := false
+		if operator == "+" {
+			// '+' supports int+int OR string+string
+			if (leftType == "int" && rightType == "int") || (leftType == "string" && rightType == "string") {
+				isValidOp = true
+			}
+		} else if operator == "-" {
+			// '-' only supports
+			if leftType == "int" && rightType == "int" {
+				isValidOp = true
+			}
+		} // Other operators (*, /) are handled in parseTerm
+
+		if !isValidOp {
+			// Construct error message
+			errMsg := fmt.Sprintf("Semantic Error: Operator '%s' cannot be applied to types %s and %s", operator, leftType, rightType)
+			if (leftType == "string" || rightType == "string") && operator != "+" {
+				errMsg += fmt.Sprintf(" (Operator '%s' not defined for strings)", operator)
+			} else if leftType != rightType {
+				errMsg += " (Type mismatch)"
+			} else if leftType != "int" && leftType != "string" {
+				errMsg += " (Unsupported types for operation)"
+			}
+			p.addError(errMsg)
+			// Don't return nil, let ResultType become "unknown"
 		}
 
 		// --- CONSTANT FOLDING DURING PARSING ---
-		leftLit, leftIsLit := leftExpr.(*IntegerLiteral)
-		rightLit, rightIsLit := rightExpr.(*IntegerLiteral)
 
-		if leftIsLit && rightIsLit {
-			// Both operands are literals, calculate the exact result width
-			leftVal := leftLit.Value
-			rightVal := rightLit.Value
-			var resultVal int
-			calculated := true // Flag to indicate successful calculation
+		// --- Integer constant folding ---
+		if leftType == "int" && rightType == "int" {
+			leftLit, leftIsLit := leftExpr.(*IntegerLiteral)
+			rightLit, rightIsLit := rightExpr.(*IntegerLiteral)
 
-			switch operator {
-			case "+":
-				resultVal = leftVal + rightVal
-			case "-":
-				resultVal = leftVal - rightVal // Result could be negative? PIC 9 handles unsigned
-				// NOTE: multiplication/division folding happens in parseTerm()
-			default:
-				calculated = false
+			if leftIsLit && rightIsLit {
+				// Both operands are literals, calculate the exact result width
+				leftVal := leftLit.Value
+				rightVal := rightLit.Value
+				var resultVal int
+				calculated := true // Flag to indicate successful calculation
+
+				switch operator {
+				case "+":
+					resultVal = leftVal + rightVal
+				case "-":
+					resultVal = leftVal - rightVal // Result could be negative? PIC 9 handles unsigned
+					// NOTE: multiplication/division folding happens in parseTerm()
+				default:
+					calculated = false
+				}
+
+				if calculated {
+					resultWidth := lib.CalculateWidthForValue(resultVal)
+					leftExpr = &IntegerLiteral{
+						Token: opToken,
+						Value: resultVal,
+						Width: resultWidth,
+					}
+					// Skip BinaryExpression creation and
+					// continue loop with the folded literal as the new left expression
+					continue
+				}
 			}
+		}
 
-			if calculated {
-				resultWidth := lib.CalculateWidthForValue(resultVal)
-				leftExpr = &IntegerLiteral{
+		// --- String constant folding ---
+		if leftType == "string" && rightType == "string" {
+			leftLit, leftIsLit := leftExpr.(*StringLiteral)
+			rightLit, rightIsLit := rightExpr.(*StringLiteral)
+
+			if leftIsLit && rightIsLit {
+				resultVal := leftLit.Value + rightLit.Value
+				resultWidth := max(lib.DefaultStringWidth, len(resultVal))
+
+				leftExpr = &StringLiteral{
 					Token: opToken,
 					Value: resultVal,
 					Width: resultWidth,
 				}
-				// Continue loop with the folded literal as the new left expression
+				// Skip BinaryExpression creation and
+				// continue loop with the folded literal as the new left expression
 				continue
 			}
 		}
 
-		// Build the BinaryExpression node
+		// Build the BinaryExpression node if no folding occured
 		leftExpr = &BinaryExpression{
 			Token:    opToken,
 			Left:     leftExpr,
