@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/arnavsurve/grace/internal/compiler/lib"
 )
 
 // NOTES:
@@ -154,7 +156,7 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 		if hasSymbols { // Add a newline if symbols were declared before temp vars
 			e.builder.WriteString("\n")
 		}
-		e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", tempIntName, defaultIntWidth))
+		e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", tempIntName, lib.DefaultIntWidth))
 		// TODO: add temp string, etc. here later
 	}
 

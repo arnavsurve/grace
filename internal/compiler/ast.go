@@ -1,6 +1,8 @@
 package compiler
 
-import "math"
+import (
+	"github.com/arnavsurve/grace/internal/compiler/lib"
+)
 
 type Node interface {
 	TokenLiteral() string
@@ -132,14 +134,14 @@ func (be *BinaryExpression) ResultWidth() int {
 		case "/":
 			if rightVal == 0 {
 				// Parser already adds error, return a default/error width
-				return defaultIntWidth
+				return lib.DefaultIntWidth
 			}
 			resultVal = leftVal / rightVal
 		default:
 			return 0 // Unknown operator
 		}
 
-		return calculateWidthForValue(resultVal)
+		return lib.CalculateWidthForValue(resultVal)
 	}
 
 	// Fallback to heuristics if not all literals
@@ -150,7 +152,7 @@ func (be *BinaryExpression) ResultWidth() int {
 	if leftWidth <= 0 || rightWidth <= 0 {
 		// This might happen if an operand's width couldn't be determined (e.g. undeclared var)
 		// Return a default or signal error? Default for now
-		return defaultIntWidth
+		return lib.DefaultIntWidth
 	}
 
 	switch be.Operator {
@@ -166,21 +168,6 @@ func (be *BinaryExpression) ResultWidth() int {
 	default:
 		return 0 // Unknown
 	}
-}
-
-// Helper function to calculate digits needed for a value (unsigned focus for PIC 9)
-func calculateWidthForValue(val int) int {
-	// Handle potential negative result from subtractions for PIC 9 (unsigned)
-	if val < 0 {
-		val = -val // Get absolute value
-	}
-
-	if val == 0 {
-		return 1
-	}
-
-	// Use Log10 for positive numbers
-	return int(math.Log10(float64(val))) + 1
 }
 
 // ResultType for BinaryExpression depends on operands and operator

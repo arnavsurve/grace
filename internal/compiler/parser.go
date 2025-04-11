@@ -3,6 +3,8 @@ package compiler
 import (
 	"fmt"
 	"strconv"
+
+	"github.com/arnavsurve/grace/internal/compiler/lib"
 )
 
 type Parser struct {
@@ -172,9 +174,12 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	// TODO: implement explicit width definition in explicit typing, for now we just implement the fallback default widths
 	switch val := stmt.Value.(type) {
 	case *IntegerLiteral:
-		varWidth = 6 // Default for inferred int
+		literalWidth := lib.CalculateWidthForValue(val.Value)
+		varWidth = max(lib.DefaultIntWidth, literalWidth)
 	case *StringLiteral:
-		varWidth = 30 // Default for inferred string
+		// TODO: similar to integer, take the max of the default string width versus the actual len of the declared str
+		// For now we just use the default
+		varWidth = lib.DefaultStringWidth
 	case *Identifier:
 		// Look up identifier in symbol table
 		if info, ok := p.symbolTable[val.Value]; ok {
@@ -191,11 +196,20 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 	// Add to symbol table only if not previously declared and type is known
 	if !declared && valueType != "unknown" {
+		// Ensure width is at least 1 if calculation somehow resulted in 0 (except for error cases -> !"unknown")
+		if varWidth <= 0 && valueType != "unknown" {
+			p.addError("Internal Warning: Calculated width was <= 0 for '%s', using 1.", varName)
+			varWidth = 1 // By doing this, we ensure a valid PIC clause
+		}
 		p.symbolTable[varName] = SymbolInfo{Type: valueType, IsConst: stmt.IsConst, Width: varWidth}
-		stmt.Name.ResolvedType = valueType
+
+		if stmt.Name != nil {
+			stmt.Name.ResolvedType = valueType
+		}
+		stmt.Name.Width = varWidth
 	}
 
-	// IMPORTANT: parseExpression now consumes all its tokens.
+	// IMPORTANT: parseExpression consumes all its tokens.
 	// curTok should be the token after the expression. No nextToken() needed here.
 	return stmt
 }
@@ -305,7 +319,7 @@ func (p *Parser) parseExpression() Expression {
 		return nil
 	}
 
-	// Loop while the *current* token is + or -
+	// Loop while the current token is + or -
 	for p.curTok.Type == TokenPlus || p.curTok.Type == TokenMinus {
 		opToken := p.curTok
 		operator := p.curTok.Literal
@@ -327,6 +341,39 @@ func (p *Parser) parseExpression() Expression {
 			// but ResultType will be "unknown"
 		}
 
+		// --- CONSTANT FOLDING DURING PARSING ---
+		leftLit, leftIsLit := leftExpr.(*IntegerLiteral)
+		rightLit, rightIsLit := rightExpr.(*IntegerLiteral)
+
+		if leftIsLit && rightIsLit {
+			// Both operands are literals, calculate the exact result width
+			leftVal := leftLit.Value
+			rightVal := rightLit.Value
+			var resultVal int
+			calculated := true // Flag to indicate successful calculation
+
+			switch operator {
+			case "+":
+				resultVal = leftVal + rightVal
+			case "-":
+				resultVal = leftVal - rightVal // Result could be negative? PIC 9 handles unsigned
+				// NOTE: multiplication/division folding happens in parseTerm()
+			default:
+				calculated = false
+			}
+
+			if calculated {
+				resultWidth := lib.CalculateWidthForValue(resultVal)
+				leftExpr = &IntegerLiteral{
+					Token: opToken,
+					Value: resultVal,
+					Width: resultWidth,
+				}
+				// Continue loop with the folded literal as the new left expression
+				continue
+			}
+		}
+
 		// Build the BinaryExpression node
 		leftExpr = &BinaryExpression{
 			Token:    opToken,
@@ -336,7 +383,7 @@ func (p *Parser) parseExpression() Expression {
 		}
 		// Loop continues, checking the new curTok
 	}
-	// When loop finishes, curTok is the token *after* the last term.
+	// When loop finishes, curTok is the token after the last term.
 	return leftExpr
 }
 
@@ -377,6 +424,50 @@ func (p *Parser) parseTerm() Expression {
 			}
 		}
 
+		// --- CONSTANT FOLDING DURING PARSING ---
+		leftLit, leftIsLit := leftExpr.(*IntegerLiteral)
+		rightLit, rightIsLit := rightExpr.(*IntegerLiteral)
+
+		if leftIsLit && rightIsLit {
+			// Both operands are literals, calculate the exact result width
+			leftVal := leftLit.Value
+			rightVal := rightLit.Value
+			var resultVal int
+			calculated := true // Flag to indicate successful calculation
+			isDivZero := false
+
+			switch operator {
+			case "*":
+				resultVal = leftVal * rightVal
+			case "/":
+				if rightVal == 0 {
+					// Error already added by prior divide by zero check
+					calculated = false
+					isDivZero = true
+				} else {
+					resultVal = leftVal / rightVal
+				}
+			default:
+				calculated = false
+			}
+
+			if calculated {
+				resultWidth := lib.CalculateWidthForValue(resultVal)
+				// Need to synthesize a token or use operator token? Use operator tok for now
+				leftExpr = &IntegerLiteral{
+					Token: opToken,
+					Value: resultVal,
+					Width: resultWidth,
+				}
+				// Continue loop with the folded literal as the new left expression
+				continue
+			} else if isDivZero {
+				// TODO:
+				// If div by zero, return nil or an error node?
+				// For now, we just fall through
+			}
+		}
+
 		// Build the BinaryExpression node
 		leftExpr = &BinaryExpression{
 			Token:    opToken,
@@ -413,7 +504,7 @@ func (p *Parser) parsePrimary() Expression {
 func (p *Parser) parseIntegerLiteral() Expression {
 	// Same as before, ensure p.nextToken() is called
 	// We initialize default width here, TODO implement explicit width
-	lit := &IntegerLiteral{Token: p.curTok, Width: defaultIntWidth}
+	lit := &IntegerLiteral{Token: p.curTok, Width: lib.DefaultIntWidth}
 	val, err := strconv.ParseInt(p.curTok.Literal, 10, 64)
 	if err != nil {
 		p.addError("Syntax Error: Could not parse integer literal '%s': %v", p.curTok.Literal, err)
@@ -428,7 +519,7 @@ func (p *Parser) parseIntegerLiteral() Expression {
 func (p *Parser) parseStringLiteral() Expression {
 	// Same as before, ensure p.nextToken() is called
 	// We initialize default width here, TODO implement explicit width
-	expr := &StringLiteral{Token: p.curTok, Value: p.curTok.Literal, Width: defaultStringWidth}
+	expr := &StringLiteral{Token: p.curTok, Value: p.curTok.Literal, Width: lib.DefaultStringWidth}
 	p.nextToken() // Consume the string token
 	return expr
 }
