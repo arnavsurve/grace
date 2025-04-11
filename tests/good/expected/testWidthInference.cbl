@@ -8,8 +8,8 @@
        01 CF_C PIC 9(6).
        01 CF_P PIC 9(6).
        01 H_T PIC 9(13).
-       01 H_Y PIC 9(12).
-       01 H_Z PIC 9(12).
+       01 H_Y PIC 9(7).
+       01 H_Z PIC 9(7).
        01 R PIC 9(6).
        01 S PIC 9(6).
        01 X PIC 9(6).

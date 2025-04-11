@@ -1,0 +1,5 @@
+// Explicit type and width
+i: int(4) = 9876
+j: int(8) = 123 // Should still use width 8
+print(i)
+print(j)

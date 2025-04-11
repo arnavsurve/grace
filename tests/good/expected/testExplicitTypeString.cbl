@@ -1,0 +1,11 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTEXPLICITTYPESTRING.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 S PIC X(30).
+
+       PROCEDURE DIVISION.
+           MOVE "Explicit String" TO S.
+           DISPLAY S.
+           STOP RUN.

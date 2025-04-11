@@ -7,10 +7,10 @@
        01 B PIC 9(6).
        01 C PIC 9(7).
        01 D PIC 9(7).
-       01 E PIC 9(12).
+       01 E PIC 9(7).
        01 F PIC 9(6).
-       01 G PIC 9(13).
-       01 H PIC 9(13).
+       01 G PIC 9(8).
+       01 H PIC 9(8).
        01 I PIC 9(13).
 
        PROCEDURE DIVISION.

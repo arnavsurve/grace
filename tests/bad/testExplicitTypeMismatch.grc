@@ -1,0 +1,5 @@
+// Error: Type mismatch int vs string
+a: int = "this is not an int"
+
+// Error: Type mismatch string vs int
+b: string = 12345

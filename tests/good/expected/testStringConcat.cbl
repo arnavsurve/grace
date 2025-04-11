@@ -13,14 +13,18 @@
        PROCEDURE DIVISION.
            MOVE "Hello " TO S1.
            MOVE "World" TO S2.
-           STRING S1 DELIMITED BY SIZE S2 DELIMITED BY SIZE
+           STRING S1 DELIMITED BY SIZE
+           S2 DELIMITED BY SIZE
            INTO S3.
            DISPLAY S1.
            DISPLAY S3.
-           STRING "Direct: " DELIMITED BY SIZE S2 DELIMITED BY SIZE "!" DELIMITED BY SIZE
+           STRING "Direct: " DELIMITED BY SIZE
+           S2 DELIMITED BY SIZE
+           "!" DELIMITED BY SIZE
            INTO GRACE-TMP-STR.
            DISPLAY GRACE-TMP-STR.
-           STRING S1 DELIMITED BY SIZE "Again" DELIMITED BY SIZE
+           STRING S1 DELIMITED BY SIZE
+           "Again" DELIMITED BY SIZE
            INTO S2.
            DISPLAY S2.
            MOVE "ABC" TO S4.

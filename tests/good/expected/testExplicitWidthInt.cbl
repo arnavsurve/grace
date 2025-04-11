@@ -1,0 +1,14 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTEXPLICITWIDTHINT.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 I PIC 9(4).
+       01 J PIC 9(8).
+
+       PROCEDURE DIVISION.
+           MOVE 9876 TO I.
+           MOVE 123 TO J.
+           DISPLAY I.
+           DISPLAY J.
+           STOP RUN.
