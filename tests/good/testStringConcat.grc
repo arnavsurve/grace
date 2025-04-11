@@ -1,0 +1,18 @@
+// tests/good/testStringConcat.grc
+s1 := "Hello" + " " // Folded: "Hello " (Width 30)
+s2 := "World"       // Width 30
+s3 := s1 + s2       // Concatenate: "Hello World" (Width 30+30=60 -> Declared Width 60)
+
+print(s1)
+print(s3)
+
+// Print expression directly
+print("Direct: " + s2 + "!") // Uses temp string
+
+// Assign expression to existing var
+s2 = s1 + "Again"
+print(s2) // "Hello Again"
+
+// Constant folding check
+s4 := "A" + "B" + "C" // Folded: "ABC" (Width 30)
+print(s4)
