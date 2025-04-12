@@ -32,10 +32,10 @@ func (p *Parser) nextToken() {
 	// fmt.Printf("curTok: %v, peekTok: %v\n", p.curTok, p.peekTok)
 }
 
-func (p *Parser) addError(format string, args ...any) {
+func (p *Parser) addError(tok Token, format string, args ...any) {
 	// TODO: Add line/column numbers later
-	errMsg := fmt.Sprintf(format, args...)
-	p.errors = append(p.errors, errMsg)
+	msg := fmt.Sprintf(format, args...)
+	p.errors = append(p.errors, fmt.Sprintf("Line %d, Col %d: %s", tok.Line, tok.Column, msg))
 }
 
 func (p *Parser) Errors() []string {
@@ -88,7 +88,7 @@ func (p *Parser) parseStatement() Statement {
 		case TokenAssign:
 			return p.parseReassignmentStatement()
 		default:
-			p.addError("Syntax Error: Expected ':=' or '=' after identifier '%s', got '%s'", p.curTok.Literal, p.peekTok.Literal)
+			p.addError(p.curTok, "Syntax Error: Expected ':=' or '=' after identifier '%s', got '%s'", p.curTok.Literal, p.peekTok.Literal)
 			// Attempt recovery: Skip the identifier and the unexpected token and consume tokens that caused the error.
 			p.nextToken() // Consume identifier
 			if p.curTok.Type != TokenEOF {
@@ -99,7 +99,7 @@ func (p *Parser) parseStatement() Statement {
 	case TokenEOF:
 		return nil
 	default:
-		p.addError("Syntax Error: Unexpected token at start of statement: %s ('%s')", p.curTok.Type, p.curTok.Literal)
+		p.addError(p.curTok, "Syntax Error: Unexpected token at start of statement: %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Attempt recovery: consume the unexpected token
 		if p.curTok.Type != TokenEOF {
 			p.nextToken()
@@ -116,7 +116,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		stmt.IsConst = true
 		p.nextToken() // Consume 'const'
 		if p.curTok.Type != TokenIdent {
-			p.addError("Syntax Error: Expected identifier after 'const', got %s", p.curTok.Type)
+			p.addError(p.curTok, "Syntax Error: Expected identifier after 'const', got %s", p.curTok.Type)
 			if p.curTok.Type != TokenEOF {
 				p.nextToken()
 			}
@@ -127,7 +127,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	// 2. Expect IDENT
 	if p.curTok.Type != TokenIdent {
 		if !stmt.IsConst {
-			p.addError("Internal Parser Error: Expected identifier for declaration start, got %s", p.curTok.Type)
+			p.addError(p.curTok, "Internal Parser Error: Expected identifier for declaration start, got %s", p.curTok.Type)
 		}
 		if p.curTok.Type != TokenEOF {
 			p.nextToken()
@@ -142,7 +142,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	// 3. Check for Redeclaration (early check)
 	_, declared := p.getSymbolInfo(varName)
 	if declared {
-		p.addError("Semantic Error: Variable '%s' already declared", varName)
+		p.addError(p.curTok, "Semantic Error: Variable '%s' already declared", varName)
 		// Continue parsing to find more errors, but don't add to symbol table later
 	}
 
@@ -161,7 +161,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 		// Expect Type Literal
 		if p.curTok.Type != TokenTypeLiteral {
-			p.addError("Syntax Error: Expected type (e.g., 'int', 'string') after ':', got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+			p.addError(p.curTok, "Syntax Error: Expected type (e.g., 'int', 'string') after ':', got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 			if p.curTok.Type != TokenEOF {
 				p.nextToken()
 			} // Consume bad token
@@ -170,7 +170,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		explicitType = p.curTok.Literal
 		// Validate if type is known
 		if explicitType != "int" && explicitType != "string" {
-			p.addError("Syntax Error: Unknown type '%s'", explicitType)
+			p.addError(p.curTok, "Syntax Error: Unknown type '%s'", explicitType)
 			// Allow parsing to continue to find more errors, but type will be marked unknown later
 		}
 		p.nextToken() // Consume Type Literal
@@ -179,7 +179,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		if p.curTok.Type == TokenLParen {
 			p.nextToken() // Consume '('
 			if p.curTok.Type != TokenInt {
-				p.addError("Syntax Error: Expected integer width inside parentheses after type '%s', got %s ('%s')", explicitType, p.curTok.Type, p.curTok.Literal)
+				p.addError(p.curTok, "Syntax Error: Expected integer width inside parentheses after type '%s', got %s ('%s')", explicitType, p.curTok.Type, p.curTok.Literal)
 				if p.curTok.Type != TokenEOF {
 					p.nextToken()
 				} // Consume bad token
@@ -188,14 +188,14 @@ func (p *Parser) parseDeclarationStatement() Statement {
 			}
 			widthVal, err := strconv.Atoi(p.curTok.Literal)
 			if err != nil || widthVal <= 0 {
-				p.addError("Syntax Error: Invalid width specification '%s'. Width must be a positive integer.", p.curTok.Literal)
+				p.addError(p.curTok, "Syntax Error: Invalid width specification '%s'. Width must be a positive integer.", p.curTok.Literal)
 				widthVal = 0 // Mark as invalid, parser will use defaults later if needed
 			}
 			explicitWidth = widthVal
 			p.nextToken() // Consume INT
 
 			if p.curTok.Type != TokenRParen {
-				p.addError("Syntax Error: Expected ')' after width specification, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+				p.addError(p.curTok, "Syntax Error: Expected ')' after width specification, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 				if p.curTok.Type != TokenEOF {
 					p.nextToken()
 				} // Consume bad token
@@ -206,7 +206,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 		// Expect '=' for assignment
 		if p.curTok.Type != TokenAssign {
-			p.addError("Syntax Error: Expected '=' after type specification for '%s', got %s ('%s')", varName, p.curTok.Type, p.curTok.Literal)
+			p.addError(p.curTok, "Syntax Error: Expected '=' after type specification for '%s', got %s ('%s')", varName, p.curTok.Type, p.curTok.Literal)
 			if p.curTok.Type != TokenEOF {
 				p.nextToken()
 			} // Consume bad token
@@ -224,7 +224,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 	default:
 		// Neither ':' nor ':=' found after IDENT
-		p.addError("Syntax Error: Expected ':=' or ':' after identifier '%s' in declaration, got '%s' ('%s')", varName, p.peekTok.Type, p.peekTok.Literal)
+		p.addError(p.curTok, "Syntax Error: Expected ':=' or ':' after identifier '%s' in declaration, got '%s' ('%s')", varName, p.peekTok.Type, p.peekTok.Literal)
 		p.nextToken() // Consume IDENT
 		if p.curTok.Type != TokenEOF {
 			p.nextToken()
@@ -248,7 +248,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 	if valueType == "unknown" && len(p.errors) == 0 {
 		// If RHS expression parsing failed internally without adding an error
-		p.addError("Internal Error: Expression resulted in 'unknown' type without specific error for '%s'", varName)
+		p.addError(p.curTok, "Internal Error: Expression resulted in 'unknown' type without specific error for '%s'", varName)
 	}
 
 	// Determine finalType and finalWidth based on explicit vs inferred declaration
@@ -265,7 +265,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		// If the declared type is valid, check against the expression's type
 		if finalType != "unknown" && valueType != "unknown" && finalType != valueType {
 			// Allow int literal assign to float var later? For now, strict.
-			p.addError("Semantic Error: Type mismatch - cannot assign value of type %s to variable '%s' declared as %s", valueType, varName, finalType)
+			p.addError(p.curTok, "Semantic Error: Type mismatch - cannot assign value of type %s to variable '%s' declared as %s", valueType, varName, finalType)
 			finalType = "unknown" // Mark as error state
 		}
 
@@ -278,12 +278,12 @@ func (p *Parser) parseDeclarationStatement() Statement {
 				if litInt, ok := expr.(*IntegerLiteral); ok && finalType == "int" {
 					reqWidth := lib.CalculateWidthForValue(litInt.Value)
 					if reqWidth > finalWidth {
-						p.addError("Semantic Error: Integer literal %d requires width %d, but variable '%s' declared with width %d", litInt.Value, reqWidth, varName, finalWidth)
+						p.addError(p.curTok, "Semantic Error: Integer literal %d requires width %d, but variable '%s' declared with width %d", litInt.Value, reqWidth, varName, finalWidth)
 					}
 				} else if litStr, ok := expr.(*StringLiteral); ok && finalType == "string" {
 					reqWidth := len(litStr.Value)
 					if reqWidth > finalWidth {
-						p.addError("Semantic Error: String literal with length %d exceeds declared width %d for variable '%s'", reqWidth, finalWidth, varName)
+						p.addError(p.curTok, "Semantic Error: String literal with length %d exceeds declared width %d for variable '%s'", reqWidth, finalWidth, varName)
 					}
 				}
 			} else {
@@ -314,7 +314,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 				finalWidth = max(lib.DefaultStringWidth, reqWidth)
 			} else {
 				// Should not happen if valueType != "unknown"
-				p.addError("Internal Error: Cannot determine default width for inferred unknown type '%s'", finalType)
+				p.addError(p.curTok, "Internal Error: Cannot determine default width for inferred unknown type '%s'", finalType)
 				finalType = "unknown" // Mark as error
 				finalWidth = 0
 			}
@@ -329,7 +329,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 	// Ensure width is valid before adding to symbol table
 	if finalType != "unknown" && finalWidth <= 0 {
-		p.addError("Internal Warning: Final width calculated as <= 0 for '%s' (type %s), setting to 1.", varName, finalType)
+		p.addError(p.curTok, "Internal Warning: Final width calculated as <= 0 for '%s' (type %s), setting to 1.", varName, finalType)
 		finalWidth = 1
 	}
 
@@ -372,11 +372,11 @@ func (p *Parser) parseReassignmentStatement() Statement {
 	symbolInfo, declared := p.getSymbolInfo(varName)
 	isConst := false
 	if !declared {
-		p.addError("Semantic Error: Cannot assign to undeclared variable '%s'", varName)
+		p.addError(p.curTok, "Semantic Error: Cannot assign to undeclared variable '%s'", varName)
 		symbolInfo = SymbolInfo{Type: "undeclared"}
 	} else {
 		if symbolInfo.IsConst {
-			p.addError("Semantic Error: Cannot assign to constant variable '%s'", varName)
+			p.addError(p.curTok, "Semantic Error: Cannot assign to constant variable '%s'", varName)
 			isConst = true
 		}
 		stmt.Name.ResolvedType = symbolInfo.Type
@@ -384,7 +384,7 @@ func (p *Parser) parseReassignmentStatement() Statement {
 
 	// Expect =
 	if p.peekTok.Type != TokenAssign {
-		p.addError("Syntax Error: Expected '=' after identifier '%s' in assignment, got '%s'", varName, p.peekTok.Literal)
+		p.addError(p.curTok, "Syntax Error: Expected '=' after identifier '%s' in assignment, got '%s'", varName, p.peekTok.Literal)
 		p.nextToken() // Consume IDENT
 		if p.curTok.Type != TokenEOF {
 			p.nextToken()
@@ -405,7 +405,7 @@ func (p *Parser) parseReassignmentStatement() Statement {
 	if declared && !isConst {
 		valueType := expr.ResultType()
 		if valueType != "unknown" && symbolInfo.Type != valueType {
-			p.addError("Semantic Error: Type mismatch - cannot assign value '%s' (type %s) to variable %s (type %s)", expr.TokenLiteral(), valueType, varName, symbolInfo.Type)
+			p.addError(p.curTok, "Semantic Error: Type mismatch - cannot assign value '%s' (type %s) to variable %s (type %s)", expr.TokenLiteral(), valueType, varName, symbolInfo.Type)
 		}
 	}
 
@@ -418,7 +418,7 @@ func (p *Parser) parsePrintStatement() Statement {
 
 	// Expect (
 	if p.peekTok.Type != TokenLParen {
-		p.addError("Syntax Error: Expected '(' after 'print', got %s", p.peekTok.Literal)
+		p.addError(p.curTok, "Syntax Error: Expected '(' after 'print', got %s", p.peekTok.Literal)
 		p.nextToken() // Consume PRINT
 		if p.curTok.Type != TokenEOF {
 			p.nextToken()
@@ -439,13 +439,13 @@ func (p *Parser) parsePrintStatement() Statement {
 	valueType := expr.ResultType()
 	if valueType == "unknown" { /* Error reported */
 	} else if valueType != "int" && valueType != "string" {
-		p.addError("Semantic Error: Cannot print value of type %s", valueType)
+		p.addError(p.curTok, "Semantic Error: Cannot print value of type %s", valueType)
 	}
 
 	// --- Expect and Consume ')' ---
 	// After parseExpression returns, curTok should be the token *after* the expression.
 	if p.curTok.Type != TokenRParen {
-		p.addError("Syntax Error: Expected ')' after print expression, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+		p.addError(p.curTok, "Syntax Error: Expected ')' after print expression, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Don't consume if it's not ')', the structure is broken.
 		return nil
 	}
@@ -472,7 +472,7 @@ func (p *Parser) parseExpression() Expression {
 
 		rightExpr := p.parseTerm() // Parse the right operand (must be a term)
 		if rightExpr == nil {
-			p.addError("Syntax Error: Expected expression term after operator '%s'", operator)
+			p.addError(opToken, "Syntax Error: Expected expression term after operator '%s'", operator)
 			return nil // Can't build node without right side
 		}
 
@@ -504,7 +504,7 @@ func (p *Parser) parseExpression() Expression {
 			} else if leftType != "int" && leftType != "string" {
 				errMsg += " (Unsupported types for operation)"
 			}
-			p.addError(errMsg)
+			p.addError(opToken, errMsg)
 			// Don't return nil, let ResultType become "unknown"
 		}
 
@@ -595,7 +595,7 @@ func (p *Parser) parseTerm() Expression {
 
 		rightExpr := p.parsePrimary() // Parse the right operand (must be a primary)
 		if rightExpr == nil {
-			p.addError("Syntax Error: Expected expression primary after operator '%s'", operator)
+			p.addError(opToken, "Syntax Error: Expected expression primary after operator '%s'", operator)
 			return nil
 		}
 
@@ -603,7 +603,7 @@ func (p *Parser) parseTerm() Expression {
 		leftType := leftExpr.ResultType()
 		rightType := rightExpr.ResultType()
 		if leftType != "int" || rightType != "int" {
-			p.addError("Semantic Error: Operator '%s' requires integer operands, got %s and %s", operator, leftType, rightType)
+			p.addError(opToken, "Semantic Error: Operator '%s' requires integer operands, got %s and %s", operator, leftType, rightType)
 			// Continue building node for further syntax checks
 		}
 
@@ -611,7 +611,7 @@ func (p *Parser) parseTerm() Expression {
 		if operator == "/" {
 			if lit, ok := rightExpr.(*IntegerLiteral); ok {
 				if lit.Value == 0 {
-					p.addError("Semantic Error: Division by literal zero")
+					p.addError(opToken, "Semantic Error: Division by literal zero")
 				}
 			}
 		}
@@ -685,7 +685,7 @@ func (p *Parser) parsePrimary() Expression {
 	case TokenLParen:
 		return p.parseGroupedExpression() // Consumes tokens including ')'
 	default:
-		p.addError("Syntax Error: Unexpected token '%s' (%s) when expecting an expression component (number, variable, string, or '(')", p.curTok.Literal, p.curTok.Type)
+		p.addError(p.curTok, "Syntax Error: Unexpected token '%s' (%s) when expecting an expression component (number, variable, string, or '(')", p.curTok.Literal, p.curTok.Type)
 		// Do NOT consume token here, let the caller decide recovery.
 		return nil
 	}
@@ -699,7 +699,7 @@ func (p *Parser) parseIntegerLiteral() Expression {
 
 	val, err := strconv.ParseInt(p.curTok.Literal, 10, 64)
 	if err != nil {
-		p.addError("Syntax Error: Could not parse integer literal '%s': %v", p.curTok.Literal, err)
+		p.addError(p.curTok, "Syntax Error: Could not parse integer literal '%s': %v", p.curTok.Literal, err)
 		p.nextToken() // Consume bad token
 		return nil
 	}
@@ -738,7 +738,7 @@ func (p *Parser) parseIdentifier() Expression {
 	symbolInfo, declared := p.getSymbolInfo(varName)
 	expr := &Identifier{Token: p.curTok, Value: varName}
 	if !declared {
-		p.addError("Semantic Error: Identifier '%s' used before declaration", varName)
+		p.addError(p.curTok, "Semantic Error: Identifier '%s' used before declaration", varName)
 		expr.ResolvedType = "unknown"
 		expr.Width = 0
 	} else {
@@ -765,7 +765,7 @@ func (p *Parser) parseGroupedExpression() Expression {
 	}
 	// Expect ')' as the *current* token now
 	if p.curTok.Type != TokenRParen {
-		p.addError("Syntax Error: Expected ')' after expression in parentheses, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+		p.addError(p.curTok, "Syntax Error: Expected ')' after expression in parentheses, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Don't consume if not ')'
 		return nil
 	}
