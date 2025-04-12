@@ -6,6 +6,8 @@
        01 A PIC 9(6).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE 12345 TO A.
            DISPLAY A.
-           STOP RUN.
+           GOBACK.

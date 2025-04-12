@@ -7,10 +7,12 @@
        01 X PIC X(30).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "start" TO X.
            MOVE X TO X.
            DISPLAY X.
            MOVE 5 TO I.
            MOVE I TO I.
            DISPLAY I.
-           STOP RUN.
+           GOBACK.

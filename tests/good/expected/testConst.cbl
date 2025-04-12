@@ -7,8 +7,10 @@
        01 MAX_VALUE PIC 9(6).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Hello Const" TO GREETING.
            DISPLAY GREETING.
            MOVE 999 TO MAX_VALUE.
            DISPLAY MAX_VALUE.
-           STOP RUN.
+           GOBACK.

@@ -6,6 +6,8 @@
        01 S PIC X(30).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Explicit String" TO S.
            DISPLAY S.
-           STOP RUN.
+           GOBACK.

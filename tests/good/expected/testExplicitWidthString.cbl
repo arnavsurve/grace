@@ -7,8 +7,10 @@
        01 STR2 PIC X(5).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Short" TO STR1.
            MOVE "Exact" TO STR2.
            DISPLAY STR1.
            DISPLAY STR2.
-           STOP RUN.
+           GOBACK.

@@ -2,4 +2,6 @@
        PROGRAM-ID. TESTEMPTY.
 
        PROCEDURE DIVISION.
-           STOP RUN.
+
+       MAIN SECTION.
+           GOBACK.

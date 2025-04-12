@@ -7,10 +7,11 @@
        01 S2 PIC X(30).
        01 S3 PIC X(60).
        01 S4 PIC X(30).
-
        01 GRACE-TMP-STR PIC X(256).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Hello " TO S1.
            MOVE "World" TO S2.
            STRING S1 DELIMITED BY SIZE
@@ -29,4 +30,4 @@
            DISPLAY S2.
            MOVE "ABC" TO S4.
            DISPLAY S4.
-           STOP RUN.
+           GOBACK.

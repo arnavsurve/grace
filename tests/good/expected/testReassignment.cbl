@@ -7,6 +7,8 @@
        01 MESSAGE PIC X(30).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Initial" TO MESSAGE.
            DISPLAY MESSAGE.
            MOVE "Changed" TO MESSAGE.
@@ -15,4 +17,4 @@
            DISPLAY COUNTER.
            MOVE 20 TO COUNTER.
            DISPLAY COUNTER.
-           STOP RUN.
+           GOBACK.

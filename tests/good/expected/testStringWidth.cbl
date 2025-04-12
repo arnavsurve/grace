@@ -9,6 +9,8 @@
        01 SHORT_STR PIC X(30).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Hello" TO SHORT_STR.
            MOVE "123456789012345678901234567890" TO EXACT_STR.
            MOVE "This string is intentionally longer than 30 characters." TO LONG_STR.
@@ -17,4 +19,4 @@
            DISPLAY EXACT_STR.
            DISPLAY LONG_STR.
            DISPLAY COPY_LONG.
-           STOP RUN.
+           GOBACK.

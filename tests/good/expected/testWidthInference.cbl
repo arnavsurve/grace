@@ -15,6 +15,8 @@
        01 X PIC 9(6).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE 20 TO CF_A.
            MOVE 100 TO CF_B.
            MOVE 100 TO CF_C.
@@ -32,4 +34,4 @@
            MOVE 20 TO S.
            COMPUTE H_T = (R + S) * R.
            DISPLAY H_T.
-           STOP RUN.
+           GOBACK.

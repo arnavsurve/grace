@@ -7,8 +7,10 @@
        01 NAME PIC X(30).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE "Hello" TO GREETING.
            MOVE "Arnav" TO NAME.
            DISPLAY GREETING.
            DISPLAY NAME.
-           STOP RUN.
+           GOBACK.

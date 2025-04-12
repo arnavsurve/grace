@@ -7,8 +7,10 @@
        01 COUNT PIC 9(6).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE 123 TO COUNT.
            DISPLAY COUNT.
            MOVE 0 TO ANOTHER.
            DISPLAY ANOTHER.
-           STOP RUN.
+           GOBACK.

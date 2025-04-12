@@ -14,6 +14,8 @@
        01 I PIC 9(13).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE 10 TO A.
            MOVE 5 TO B.
            COMPUTE C = A + B.
@@ -30,4 +32,4 @@
            DISPLAY H.
            COMPUTE I = (A * B) + 2.
            DISPLAY I.
-           STOP RUN.
+           GOBACK.

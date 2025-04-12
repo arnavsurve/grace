@@ -9,6 +9,8 @@
        01 TOOLARGE PIC 9(9).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE 123 TO SMALL.
            MOVE 123456 TO MEDIUM.
            MOVE 1234567 TO LARGE.
@@ -17,4 +19,4 @@
            DISPLAY MEDIUM.
            DISPLAY LARGE.
            DISPLAY TOOLARGE.
-           STOP RUN.
+           GOBACK.

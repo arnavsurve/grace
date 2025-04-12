@@ -9,10 +9,12 @@
        01 SOURCE PIC 9(6).
 
        PROCEDURE DIVISION.
+
+       MAIN SECTION.
            MOVE 42 TO SOURCE.
            MOVE SOURCE TO DEST.
            DISPLAY DEST.
            MOVE "abc" TO S_SOURCE.
            MOVE S_SOURCE TO S_DEST.
            DISPLAY S_DEST.
-           STOP RUN.
+           GOBACK.
