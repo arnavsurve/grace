@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const graceCmd = "go run ./cmd/grace"
@@ -20,67 +21,100 @@ func main() {
 }
 
 func runGoodTests(dir string) {
+	var wg sync.WaitGroup
 	files, _ := filepath.Glob(filepath.Join(dir, "*.grc"))
 
+	passed := 0
+	failed := 0
+
 	for _, file := range files {
-		name := filepath.Base(file)
-		fmt.Printf("→ %s... ", name)
+		wg.Add(1)
 
-		// Run compiler
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", graceCmd, file))
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Println("❌ Compile failed:", err)
-			fmt.Println(string(output))
-			continue
-		}
+		go func(file string) {
+			defer wg.Done()
 
-		nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
+			var buf bytes.Buffer
+			name := filepath.Base(file)
+			buf.WriteString(fmt.Sprintf("→ %s... ", name))
 
-		// Read expected output
-		expectedPath := filepath.Join(dir, "expected", nameWithoutExt+".cbl")
-		expected, err := os.ReadFile(expectedPath)
-		if err != nil {
-			fmt.Println("❌ Missing expected output:", expectedPath)
-			continue
-		}
+			// Run compiler
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", graceCmd, file))
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				buf.WriteString(fmt.Sprintf("❌ Compile failed: %v\n%s", err, string(output)))
+				fmt.Print(buf.String())
+				failed++
+				return
+			}
 
-		// Determine actual output path (matching logic in main.go)
-		outfilePath := filepath.Join("out", nameWithoutExt+".cbl")
+			nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
 
-		// Read actual output
-		actual, err := os.ReadFile(outfilePath)
-		if err != nil {
-			fmt.Println("❌ Missing actual output:", outfilePath)
-			continue
-		}
+			expectedPath := filepath.Join(dir, "expected", nameWithoutExt+".cbl")
+			expected, err := os.ReadFile(expectedPath)
+			if err != nil {
+				buf.WriteString(fmt.Sprintf("❌ Missing expected output: %s\n", expectedPath))
+				fmt.Print(buf.String())
+				failed++
+				return
+			}
 
-		if bytes.Equal(expected, actual) {
-			fmt.Println("✅")
-		} else {
-			fmt.Println("❌ Mismatch")
-		}
+			outfilePath := filepath.Join("out", nameWithoutExt+".cbl")
+			actual, err := os.ReadFile(outfilePath)
+			if err != nil {
+				buf.WriteString(fmt.Sprintf("❌ Missing actual output: %s\n", outfilePath))
+				fmt.Print(buf.String())
+				failed++
+				return
+			}
+
+			if bytes.Equal(expected, actual) {
+				buf.WriteString("✅\n")
+				passed++
+			} else {
+				buf.WriteString("❌ Mismatch\n")
+				failed++
+			}
+
+			fmt.Print(buf.String())
+		}(file)
 	}
+	wg.Wait()
+	fmt.Printf("\nSummary: ✅ %d | ❌ %d\n", passed, failed)
 }
 
 func runBadTests(dir string) {
+	var wg sync.WaitGroup
 	files, _ := filepath.Glob(filepath.Join(dir, "*.grc"))
 
+	passed := 0
+	failed := 0
+
 	for _, file := range files {
-		name := filepath.Base(file)
-		fmt.Printf("→ %s... ", name)
+		wg.Add(1)
 
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", graceCmd, file))
-		output, err := cmd.CombinedOutput()
-		if err == nil {
-			fmt.Println("❌ Expected failure but got success")
-			continue
-		}
+		go func(file string) {
+			defer wg.Done()
 
-		if bytes.Contains(output, []byte("error")) || bytes.Contains(output, []byte("Error")) {
-			fmt.Println("✅")
-		} else {
-			fmt.Println("⚠️ Failed, but no error message detected")
-		}
+			var buf bytes.Buffer
+			name := filepath.Base(file)
+			buf.WriteString(fmt.Sprintf("→ %s... ", name))
+
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", graceCmd, file))
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				buf.WriteString(fmt.Sprintf("❌ Expected failure but got success\n"))
+				failed++
+			} else if bytes.Contains(output, []byte("error")) || bytes.Contains(output, []byte("Error")) {
+				buf.WriteString(fmt.Sprintf("✅\n"))
+				passed++
+			} else {
+				buf.WriteString(fmt.Sprintf("⚠️ Failed, but no error message detected\n"))
+				failed++
+			}
+
+			fmt.Print(buf.String())
+		}(file)
 	}
+	wg.Wait()
+	fmt.Printf("\nSummary: ✅ %d | ❌ %d\n", passed, failed)
 }
