@@ -45,6 +45,22 @@ func (e *Emitter) Errors() []string {
 	return e.errors
 }
 
+// --- Emit Helpers ---
+
+func (e *Emitter) emitA(line string) {
+	e.builder.WriteString(areaAIndent + line + "\n")
+}
+
+func (e *Emitter) emitB(line string) {
+	e.builder.WriteString(areaBIndent + line + "\n")
+}
+
+func (e *Emitter) emitComment(comment string) {
+	// For comments, '*' must be exactly in column 7
+	line := "      *" + comment
+	e.builder.WriteString(line + "\n")
+}
+
 // Pre-pass to check for expression printing
 // This will be called before emitting the main divisions
 func (e *Emitter) analyzeProgram(program *Program) {
@@ -68,31 +84,54 @@ func (e *Emitter) analyzeProgram(program *Program) {
 }
 
 func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
-	e.builder.Reset() // Ensure clean state for multiple calls if needed
+	e.builder.Reset()     // Clear final builder
+	e.errors = []string{} // Reset errors
 
 	e.analyzeProgram(program)
 
 	e.emitHeader(nameWithoutExt)
+
 	e.emitDataDivision(program.SymbolTable)
 
-	e.emitA("PROCEDURE DIVISION.")
+	e.builder.WriteString(areaAIndent + "PROCEDURE DIVISION.\n")
 
+	// DECLARATIVES (if procedures exist)
+	hasProcs := false
 	for _, stmt := range program.Statements {
-		switch stmt := stmt.(type) {
-		case *PrintStatement:
-			e.emitPrint(stmt)
-		case *DeclarationStatement:
-			e.emitDeclaration(stmt)
-		case *ReassignmentStatement:
-			e.emitReassignment(stmt)
-		default:
-			// This should ideally not happen if the parser produces known types
-			// If we land here, check parsing logic for bugs
-			e.addError("Emitter encountered unknown statement type: %T", stmt)
+		if _, ok := stmt.(*ProcDeclarationStatement); ok {
+			hasProcs = true
+			break
 		}
 	}
 
-	e.emitFooter()
+	if hasProcs {
+		e.builder.WriteString(areaAIndent + "DECLARATIVES.\n") // START Declaratives
+		e.builder.WriteString("\n")                            // Add spacing
+
+		for _, stmt := range program.Statements {
+			if procDecl, ok := stmt.(*ProcDeclarationStatement); ok {
+				e.emitStatement(procDecl)
+			}
+		}
+
+		e.builder.WriteString("\n")                                // Add spacing
+		e.builder.WriteString(areaAIndent + "END DECLARATIVES.\n") // END Declaratives
+		e.builder.WriteString("\n")                                // Space before main logic
+	} else {
+		e.builder.WriteString("\n")
+	}
+
+	// Main logic section (write header, collected mainLogic, footer directly to builder)
+	e.builder.WriteString(areaAIndent + "MAIN SECTION.\n")
+
+	// Loop through statements again to emit main logic directly
+	for _, stmt := range program.Statements {
+		if _, ok := stmt.(*ProcDeclarationStatement); !ok { // Skip procs
+			e.emitStatement(stmt)
+		}
+	}
+
+	e.emitB("GOBACK.")
 
 	if len(e.errors) > 0 {
 		// TODO: Return errors instead of potentially broken COBOL?
@@ -102,37 +141,35 @@ func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
 	return e.builder.String()
 }
 
-// --- Emit Helpers ---
-
-func (e *Emitter) emitA(line string) {
-	e.builder.WriteString(areaAIndent + line + "\n")
-}
-
-func (e *Emitter) emitB(line string) {
-	e.builder.WriteString(areaBIndent + line + "\n")
-}
-
 // --- Emit Structure ---
 
 func (e *Emitter) emitHeader(nameWithoutExt string) {
-	e.emitA("IDENTIFICATION DIVISION.")
+	e.builder.WriteString(areaAIndent + "IDENTIFICATION DIVISION.\n")
 	programId := fmt.Sprintf("PROGRAM-ID. %s.", strings.ToUpper(nameWithoutExt))
-	e.emitA(programId)
+	e.builder.WriteString(areaAIndent + programId + "\n")
 	e.builder.WriteString("\n")
 }
 
 func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
-	hasSymbols := symbolTable != nil && len(symbolTable) > 0
-	needsWorkingStorage := hasSymbols || e.needsTempInt || e.needsTempString
+	// Filter out procedures before checking if working storage is needed
+	hasRealVars := false
+	for _, info := range symbolTable {
+		if info.Type != "proc" { // Check the type from symbol table
+			hasRealVars = true
+			break
+		}
+	}
+
+	needsWorkingStorage := hasRealVars || e.needsTempInt || e.needsTempString
 
 	if !needsWorkingStorage {
 		return // Skip DATA DIVISION entirely if nothing to declare
 	}
 
-	e.emitA("DATA DIVISION.")
-	e.emitA("WORKING-STORAGE SECTION.")
+	e.builder.WriteString(areaAIndent + "DATA DIVISION.\n")
+	e.builder.WriteString(areaAIndent + "WORKING-STORAGE SECTION.\n")
 
-	if hasSymbols {
+	if hasRealVars {
 		var names []string
 		for varName := range symbolTable {
 			names = append(names, varName)
@@ -142,6 +179,11 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 		// Declare user-defined variables
 		for _, varName := range names {
 			info := symbolTable[varName]
+
+			if info.Type == "proc" {
+				continue
+			}
+
 			cobolName := strings.ToUpper(varName)
 
 			if info.Width <= 0 {
@@ -149,11 +191,12 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 				info.Width = 1
 			}
 
+			var picClause string
 			switch info.Type {
 			case "string":
-				e.emitA(fmt.Sprintf("01 %s PIC X(%d).", cobolName, info.Width))
+				picClause = fmt.Sprintf("01 %s PIC X(%d).", cobolName, info.Width)
 			case "int":
-				e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", cobolName, info.Width))
+				picClause = fmt.Sprintf("01 %s PIC 9(%d).", cobolName, info.Width)
 			case "unknown", "undeclared":
 				// Parser should prevent this, but warn if it slips through somehow
 				// Defensive programming and whatnot
@@ -162,27 +205,23 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 			default:
 				e.addError("Unsupported variable type '%s' for '%s' in Data Division", info.Type, varName)
 			}
+			e.builder.WriteString(areaAIndent + picClause + "\n")
 		}
-	}
-
-	// Add a newline if symbols were declared AND temp vars are needed
-	if hasSymbols && (e.needsTempInt || e.needsTempString) {
-		e.builder.WriteString("\n")
 	}
 
 	// Declare temporary variables if needed
 	if e.needsTempInt {
-		e.emitA(fmt.Sprintf("01 %s PIC 9(%d).", tempIntName, lib.DefaultIntWidth))
+		tempDecl := fmt.Sprintf("01 %s PIC 9(%d).", tempIntName, lib.DefaultIntWidth)
+		e.builder.WriteString(areaAIndent + tempDecl + "\n")
 	}
 	if e.needsTempString {
-		e.emitA(fmt.Sprintf("01 %s PIC X(%d).", tempStringName, tempStringWidth))
+		tempDecl := fmt.Sprintf("01 %s PIC X(%d).", tempStringName, tempStringWidth)
+		e.builder.WriteString(areaAIndent + tempDecl + "\n")
 	}
 
-	e.builder.WriteString("\n") // Ensure PROCEDURE DIVISION starts on new line
-}
-
-func (e *Emitter) emitFooter() {
-	e.emitB("STOP RUN.")
+	if needsWorkingStorage {
+		e.builder.WriteString("\n")
+	}
 }
 
 // --- Emit Statements ---
@@ -400,6 +439,27 @@ func (e *Emitter) emitExpression(expr Expression) string {
 	}
 }
 
+func (e *Emitter) emitStatement(stmt Statement) {
+	switch s := stmt.(type) {
+	case *ProcDeclarationStatement:
+		e.emitProcDeclaration(s)
+	case *ExpressionStatement:
+		e.emitExpressionStatement(s)
+	case *BlockStatement:
+		e.emitBlockStatement(s)
+	case *PrintStatement:
+		e.emitPrint(s)
+	case *DeclarationStatement:
+		e.emitDeclaration(s)
+	case *ReassignmentStatement:
+		e.emitReassignment(s)
+	default:
+		// This should ideally not happen if the parser produces known types
+		// If we land here, check parsing logic for bugs
+		e.addError("Emitter encountered unknown statement type: %T", stmt)
+	}
+}
+
 // emitStringConcatenation generates a COBOL STRING statement.
 // It flattens the potentially nested BinaryExpression tree for concat.
 func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *BinaryExpression) error {
@@ -470,4 +530,61 @@ func (e *Emitter) collectStringOperands(expr Expression, operands *[]string) err
 		return fmt.Errorf("unexpected node type %T", expr)
 	}
 	return nil
+}
+
+// Emits a procedure declaration as a COBOL SECTION
+func (e *Emitter) emitProcDeclaration(stmt *ProcDeclarationStatement) {
+	if stmt == nil || stmt.Name == nil || stmt.Body == nil {
+		e.addError("Emitter received invalid procedure declaration")
+		return
+	}
+	procName := strings.ToUpper(stmt.Name.Value) // COBOL convention
+
+	e.emitA(procName + " SECTION.") // Emit section header
+	e.emitComment(fmt.Sprintf("proc '%s()'", stmt.Name.Value))
+
+	e.emitStatement(stmt.Body)
+
+	e.emitB("EXIT SECTION.")
+}
+
+// Emits statements within a block (e.g. procedure body)
+func (e *Emitter) emitBlockStatement(block *BlockStatement) {
+	if block == nil {
+		return
+	}
+
+	// No specific COBOL equivalent for a block itself, just emit its statements
+	// Indentation (area B) is handled by the individual statement emitters called below
+	for _, stmt := range block.Statements {
+		e.emitStatement(stmt)
+	}
+}
+
+// Emits code for an ExpressionStatement (handles proc calls)
+func (e *Emitter) emitExpressionStatement(stmt *ExpressionStatement) {
+	if stmt == nil || stmt.Expression == nil {
+		e.addError("Emitter received invalid expression statement")
+		return
+	}
+
+	// Check if the expression is a procedure call
+	if procCall, ok := stmt.Expression.(*ProcCallExpression); ok {
+		e.emitProcCall(procCall)
+	} else {
+		// Other expression types (literals, binary ops without assignment)
+		// usually have no side effects and generate no code when used as standalone statements.
+		// Optionally add a warning.
+		// e.addError("Warning: Expression of type %T used as statement has no effect.", stmt.Expression)
+	}
+}
+
+// Emits a COBOL PERFORM statement for a procedure call
+func (e *Emitter) emitProcCall(expr *ProcCallExpression) {
+	if expr == nil || expr.Function == nil {
+		e.addError("Emitter received invalid procedure call expression")
+		return
+	}
+	procName := strings.ToUpper(expr.Function.Value)
+	e.emitB(fmt.Sprintf("PERFORM %s.", procName))
 }
