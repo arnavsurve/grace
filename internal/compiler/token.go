@@ -6,6 +6,8 @@ const (
 	// Single character tokens
 	TokenLParen   TokenType = "LPAREN"   // (
 	TokenRParen   TokenType = "RPAREN"   // )
+	TokenLBrace   TokenType = "LBRACE"   // {
+	TokenRBrace   TokenType = "RBRACE"   // }
 	TokenAssign   TokenType = "ASSIGN"   // = (reassignment)
 	TokenPlus     TokenType = "PLUS"     // +
 	TokenMinus    TokenType = "MINUS"    // -
@@ -16,6 +18,7 @@ const (
 	// Keywords
 	TokenPrint TokenType = "PRINT" // print
 	TokenConst TokenType = "CONST" // const
+	TokenProc  TokenType = "PROC"
 
 	// Literals
 	TokenString TokenType = "STRING" // "..."

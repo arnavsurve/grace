@@ -77,19 +77,26 @@ func (p *Parser) ParseProgram() *Program {
 
 func (p *Parser) parseStatement() Statement {
 	switch p.curTok.Type {
+	case TokenProc:
+		return p.parseProcDeclarationStatement()
 	case TokenPrint:
 		return p.parsePrintStatement()
 	case TokenConst:
 		return p.parseDeclarationStatement()
 	case TokenIdent:
+		// ident := ... (declaration)
+		// ident : ... (declaration)
+		// ident = ... (reassignment)
+		// ident (...) (procedure call)
 		switch p.peekTok.Type {
 		case TokenAssignDefine, TokenColon:
 			return p.parseDeclarationStatement()
 		case TokenAssign:
 			return p.parseReassignmentStatement()
+		case TokenLParen:
+			return p.parseExpressionStatement()
 		default:
 			p.addError(p.curTok, "Syntax Error: Expected ':=' or '=' after identifier '%s', got '%s'", p.curTok.Literal, p.peekTok.Literal)
-			// Attempt recovery: Skip the identifier and the unexpected token and consume tokens that caused the error.
 			p.nextToken() // Consume identifier
 			if p.curTok.Type != TokenEOF {
 				p.nextToken()
@@ -99,6 +106,12 @@ func (p *Parser) parseStatement() Statement {
 	case TokenEOF:
 		return nil
 	default:
+		// Might be an expression statement starting with something else (like a literal)
+		// Let's try parsing it as an expression statement if nothing else matched
+		stmt := p.parseExpressionStatement()
+		if stmt != nil {
+			return stmt
+		}
 		p.addError(p.curTok, "Syntax Error: Unexpected token at start of statement: %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Attempt recovery: consume the unexpected token
 		if p.curTok.Type != TokenEOF {
@@ -146,16 +159,16 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		// Continue parsing to find more errors, but don't add to symbol table later
 	}
 
-	// 4. Check for ':=' (Inferred) or ':' (Explicit) and consume tokens up to expression start
 	var explicitType string = ""
-	explicitWidth := 0
+	var explicitWidth int = 0
 	var useExplicitType bool = false
 
-	// We look at peekTok to decide the path
+	// 4. Check for ':=' (Inferred) or ':' (Explicit) and consume tokens up to expression start
 	switch p.peekTok.Type {
 	case TokenColon:
 		// --- Explicit Type Path ---
 		useExplicitType = true
+		stmt.HasExplicitType = true
 		p.nextToken() // Consume IDENT
 		p.nextToken() // Consume ':'
 
@@ -167,6 +180,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 			} // Consume bad token
 			return nil
 		}
+		stmt.ExplicitTypeToken = p.curTok
 		explicitType = p.curTok.Literal
 		// Validate if type is known
 		if explicitType != "int" && explicitType != "string" {
@@ -186,6 +200,9 @@ func (p *Parser) parseDeclarationStatement() Statement {
 				// Try to recover if possible? Maybe look for ')'? For now, return nil.
 				return nil
 			}
+
+			stmt.ExplicitWidthToken = p.curTok
+
 			widthVal, err := strconv.Atoi(p.curTok.Literal)
 			if err != nil || widthVal <= 0 {
 				p.addError(p.curTok, "Syntax Error: Invalid width specification '%s'. Width must be a positive integer.", p.curTok.Literal)
@@ -212,12 +229,14 @@ func (p *Parser) parseDeclarationStatement() Statement {
 			} // Consume bad token
 			return nil
 		}
+
 		stmt.Token = p.curTok // Store '=' token
 		p.nextToken()         // Consume '=', curTok is now start of expression
 
 	case TokenAssignDefine:
 		// --- Inferred Type Path ---
 		useExplicitType = false
+		stmt.HasExplicitType = false
 		p.nextToken()         // Consume IDENT. curTok is now ':='
 		stmt.Token = p.curTok // Store ':=' token
 		p.nextToken()         // Consume ':='. curTok is now start of expression
@@ -301,8 +320,8 @@ func (p *Parser) parseDeclarationStatement() Statement {
 			finalWidth = 0
 		}
 
-	} else { // Not useExplicitType
 		// --- Inferred Declaration Logic (`:=`) ---
+	} else { // Not useExplicitType
 		if valueType != "unknown" {
 			finalType = valueType // Type is inferred from expression
 
@@ -355,6 +374,100 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	// parseExpression consumed tokens including the last part of the expression.
 	// The current token (p.curTok) should now be whatever follows the expression
 	// (e.g., EOF, or the start of the next statement). No nextToken() needed here.
+	return stmt
+}
+
+func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
+	stmt := &ProcDeclarationStatement{Token: p.curTok}
+
+	if !p.expectPeek(TokenIdent) {
+		return nil
+	}
+
+	stmt.Name = &Identifier{Token: p.curTok, Value: p.curTok.Literal}
+
+	// Check for redeclaration before adding
+	if _, exists := p.symbolTable[stmt.Name.Value]; exists {
+		p.addError(stmt.Name.Token, "Semantic Error: Redaclaration of '%s'", stmt.Name.Value)
+	} else {
+		p.symbolTable[stmt.Name.Value] = SymbolInfo{
+			Type:    "proc",
+			IsConst: true,
+			Width:   0, // N/A for proc itself
+		}
+		stmt.Name.ResolvedType = "proc"
+	}
+
+	// Expect '('
+	if !p.expectPeek(TokenLParen) {
+		return nil
+	}
+	// TODO: parse parameters here
+
+	// Expect ')'
+	if !p.expectPeek(TokenRParen) {
+		return nil
+	}
+
+	// Expect '{'
+	if !p.expectPeek(TokenLBrace) {
+		return nil
+	}
+
+	stmt.Body = p.parseBlockStatement()
+	if stmt.Body == nil {
+		return nil // Error handled in parseBlockStatement
+	}
+
+	// No need to call nextToken() here, parseBlockStatement consumes the final '}'
+
+	return stmt
+}
+
+func (p *Parser) parseBlockStatement() *BlockStatement {
+	block := &BlockStatement{Token: p.curTok} // Store '{' token
+	block.Statements = []Statement{}
+
+	p.nextToken() // Consume '{'
+
+	for p.curTok.Type != TokenRBrace && p.curTok.Type != TokenEOF {
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Statements = append(block.Statements, stmt)
+		} else {
+			// If parseStatement returns nil, it means an error occurred
+			// and it should have consumed the problematic token(s).
+			// We need to advance to avoid infinite loops if recovery fails.
+			// However, parseStatement *should* advance on error. Let's assume it does.
+			// If infinite loops occur, add p.nextToken() here cautiously.
+		}
+	}
+
+	if p.curTok.Type != TokenRBrace {
+		p.addError(p.curTok, "Syntax Error: Expected '}' to close block, got %s", p.curTok.Type)
+		return nil
+	}
+
+	p.nextToken() // Consume '}'
+
+	return block
+}
+
+// parseExpressionStatement handles statements that are just expressions (like proc calls)
+func (p *Parser) parseExpressionStatement() *ExpressionStatement {
+	stmt := &ExpressionStatement{Token: p.curTok}
+
+	// Use the main expression parser. Precedence etc handled there.
+	stmt.Expression = p.parseExpression()
+	if stmt.Expression == nil {
+		return nil // Error reported by parseExpression
+	}
+
+	// Check if the next token indicates the end of the statement (e.g., EOF, newline implicitly handled by next parseStatement call)
+	// In many languages, a semicolon would be expected here. Grace is newline-terminated.
+	// No explicit check needed here, the main loop handles moving to the next statement.
+
+	// If parseExpression succeeded, curTok is already advanced past the expression.
 	return stmt
 }
 
@@ -681,7 +794,11 @@ func (p *Parser) parsePrimary() Expression {
 	case TokenString:
 		return p.parseStringLiteral() // Consumes token
 	case TokenIdent:
-		return p.parseIdentifier() // Consumes token
+		if p.peekTok.Type == TokenLParen {
+			return p.parseProcCallExpression() // Parse the call
+		} else {
+			return p.parseIdentifier() // Parse as a variable
+		}
 	case TokenLParen:
 		return p.parseGroupedExpression() // Consumes tokens including ')'
 	default:
@@ -692,6 +809,95 @@ func (p *Parser) parsePrimary() Expression {
 }
 
 // --- Primary/Helper Parsers (Consume their own tokens) ---
+
+func (p *Parser) parseProcCallExpression() Expression {
+	identToken := p.curTok
+
+	symbolInfo, exists := p.symbolTable[identToken.Literal]
+	if !exists {
+		p.addError(identToken, "Semantic Error: Call to undefined procedure '%s'", identToken.Literal)
+		p.nextToken() // Consume ident
+		if p.curTok.Type == TokenLParen {
+			p.nextToken()
+			// Maybe try to find ')'? Let's just consume '(' for now.
+			// We might need better recovery later.
+			if p.curTok.Type == TokenRParen {
+				p.nextToken() // Consume ')' if immediately after
+			}
+		} // Consume '(' if present
+		// Attempt to find ')'? Risky. Stop recovery here.
+		return nil
+	}
+
+	// Check if it's actually a procedure type
+	if symbolInfo.Type != "proc" {
+		p.addError(identToken, "Semantic Error: '%s' is not a procedure, it's a %s", identToken.Literal, symbolInfo.Type)
+		// Recovery similar to above?
+		p.nextToken() // Consume ident
+		if p.curTok.Type == TokenLParen {
+			p.nextToken()
+		} // consume '('
+		if p.curTok.Type == TokenRParen {
+			p.nextToken()
+		} // consume ')'
+		return nil
+	}
+
+	// TODO: Add check: is it actually a procedure type?
+	// symbolInfo := p.symbolTable[identToken.Literal]
+	// if symbolInfo.Type != "proc" { ... error ... }
+
+	expr := &ProcCallExpression{
+		Token:    identToken,
+		Function: &Identifier{Token: identToken, Value: identToken.Literal, ResolvedType: "proc"},
+	}
+
+	if !p.expectPeek(TokenLParen) { // Expect AND CONSUME '('
+		return nil
+	}
+
+	// --- Parse Arguments ---
+	var err error
+	expr.Arguments, err = p.parseCallArguments()
+	if err != nil {
+		return nil
+	}
+	// parseCallArguments should consume the final ')'
+
+	return expr
+}
+
+// Simpler parseCallArguments for Phase 1
+// Expects curTok to be '(' upon entry. Consumes '()' if found.
+func (p *Parser) parseCallArguments() ([]Expression, error) {
+	args := []Expression{}
+
+	// Expect curTok to be '('
+	if p.curTok.Type != TokenLParen {
+		p.addError(p.curTok, "Internal Parser Error: parseCallArguments called when current token is not '('. Got %s", p.curTok.Type)
+		return nil, fmt.Errorf("internal parser error")
+	}
+
+	// Expect peekTok to be ')'
+	if p.peekTok.Type != TokenRParen {
+		// If not immediately ')', it's an error in Phase 1
+		p.nextToken() // Consume '(' to show the unexpected token in the error
+		p.addError(p.curTok, "Syntax Error: Unexpected token '%s' inside procedure call parentheses; arguments not supported yet", p.curTok.Literal)
+		// Recovery: Skip until ')' or EOF
+		for p.curTok.Type != TokenRParen && p.curTok.Type != TokenEOF {
+			p.nextToken()
+		}
+		if p.curTok.Type == TokenRParen {
+			p.nextToken() // Consume the ')' we eventually found
+		}
+		return nil, fmt.Errorf("arguments not supported yet")
+	}
+
+	// If we get here, curTok is '(' and peekTok is ')'
+	p.nextToken()    // Consume '('
+	p.nextToken()    // Consume ')' - curTok is now AFTER ')'
+	return args, nil // Success
+}
 
 func (p *Parser) parseIntegerLiteral() Expression {
 	// Store the initial token for potential use in the AST node
@@ -771,4 +977,19 @@ func (p *Parser) parseGroupedExpression() Expression {
 	}
 	p.nextToken() // Consume ')'
 	return expr   // Return inner expression's AST
+}
+
+func (p *Parser) expectPeek(t TokenType) bool {
+	if p.peekTok.Type == t {
+		p.nextToken()
+		return true
+	}
+	p.peekError(t)
+	return false
+}
+
+func (p *Parser) peekError(t TokenType) {
+	msg := fmt.Sprintf("Syntax Error: Expected next token to be %s, got %s instead",
+		t, p.peekTok.Type)
+	p.addError(p.peekTok, msg) // Report error at the unexpected token
 }

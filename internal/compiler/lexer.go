@@ -75,6 +75,14 @@ func (l *Lexer) NextToken() Token {
 		tok = Token{Type: TokenRParen, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
+	case '{':
+		tok = Token{Type: TokenLBrace, Literal: string(l.ch), Line: startLine, Column: startCol}
+		l.readChar()
+		return tok
+	case '}':
+		tok = Token{Type: TokenRBrace, Literal: string(l.ch), Line: startLine, Column: startCol}
+		l.readChar()
+		return tok
 	case '+':
 		tok = Token{Type: TokenPlus, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
@@ -111,17 +119,21 @@ func (l *Lexer) NextToken() Token {
 	default:
 		if isLetter(l.ch) {
 			ident := l.readIdentifier()
+			tokenType := TokenIdent
 
 			switch ident {
 			case "print":
-				return Token{Type: TokenPrint, Literal: ident, Line: startLine, Column: startCol}
+				tokenType = TokenPrint
 			case "const":
-				return Token{Type: TokenConst, Literal: ident, Line: startLine, Column: startCol}
+				tokenType = TokenConst
+			case "proc":
+				tokenType = TokenProc
 			case "string", "int", "bool":
-				return Token{Type: TokenTypeLiteral, Literal: ident, Line: startLine, Column: startCol}
-			default:
-				return Token{Type: TokenIdent, Literal: ident, Line: startLine, Column: startCol}
+				tokenType = TokenTypeLiteral
 			}
+
+			return Token{Type: tokenType, Literal: ident, Line: startLine, Column: startCol}
+
 		} else if isDigit(l.ch) {
 			return l.readInteger(startLine, startCol)
 		} else {
