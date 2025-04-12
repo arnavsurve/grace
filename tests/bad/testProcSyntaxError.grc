@@ -1,0 +1,9 @@
+// Missing opening brace
+proc missingBrace() 
+    print("This shouldn't compile")
+}
+
+// Valid proc for reference
+proc valid() {
+    print("This is valid")
+}

@@ -1,0 +1,13 @@
+proc inner() {
+	print("inside inner proc")
+}
+
+proc outer() {
+	print("outer proc start")
+	inner()
+	print("outer proc end")
+}
+
+print("main start")
+outer()
+print("main end")

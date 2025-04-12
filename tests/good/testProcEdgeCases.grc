@@ -1,0 +1,21 @@
+// Empty procedure
+proc empty() {
+}
+
+// Procedure using a global variable
+gval := 42
+
+proc showVal() {
+    print("Value in proc: ")
+    print(gval)
+}
+
+// Call empty procedure
+empty()
+
+// Print value
+print("Global value: ")
+print(gval)
+
+// Call procedure that shows the value
+showVal()

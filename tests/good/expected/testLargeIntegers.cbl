@@ -1,0 +1,18 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTLARGEINTEGERS.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 LARGEVALUE PIC 9(10).
+       01 RESULT PIC 9(11).
+
+       PROCEDURE DIVISION.
+
+       MAIN SECTION.
+           MOVE 2147483647 TO LARGEVALUE.
+           COMPUTE RESULT = LARGEVALUE + 1.
+           DISPLAY "Large integer: ".
+           DISPLAY LARGEVALUE.
+           DISPLAY "After adding 1: ".
+           DISPLAY RESULT.
+           GOBACK.
