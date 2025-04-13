@@ -16,6 +16,8 @@ func NewLexer(input string) *Lexer {
 	return l
 }
 
+// readChar advances the lexer's position and updates the current character
+// It handles EOF and tracks line/column numbers correctly
 func (l *Lexer) readChar() {
 	if l.readPosition >= len(l.input) {
 		l.ch = 0 // ASCII NULL (EOF)
@@ -98,6 +100,10 @@ func (l *Lexer) NextToken() Token {
 	case '"':
 		// readString consumes necessary chars and returns the token
 		return l.readString(startLine, startCol)
+	case ',':
+		tok = l.newToken(TokenComma, string(l.ch), startLine, startCol)
+		l.readChar() // Consume the comma
+		return tok   // Return immediately
 	case ':':
 		if l.peekChar() == '=' {
 			ch := l.ch
@@ -119,29 +125,22 @@ func (l *Lexer) NextToken() Token {
 	default:
 		if isLetter(l.ch) {
 			ident := l.readIdentifier()
-			tokenType := TokenIdent
+			tokenType := lookupIdent(ident)
 
-			switch ident {
-			case "print":
-				tokenType = TokenPrint
-			case "const":
-				tokenType = TokenConst
-			case "proc":
-				tokenType = TokenProc
-			case "string", "int", "bool":
-				tokenType = TokenTypeLiteral
-			}
-
-			return Token{Type: tokenType, Literal: ident, Line: startLine, Column: startCol}
-
+			return l.newToken(tokenType, ident, startLine, startCol)
 		} else if isDigit(l.ch) {
 			return l.readInteger(startLine, startCol)
 		} else {
-			tok = Token{Type: TokenIllegal, Literal: string(l.ch), Line: startLine, Column: startCol}
+			tok = l.newToken(TokenIllegal, string(l.ch), startLine, startCol)
 			l.readChar()
 			return tok
 		}
 	}
+}
+
+// newToken is a helper to create a Token struct
+func (l *Lexer) newToken(tokenType TokenType, literal string, line, col int) Token {
+	return Token{Type: tokenType, Literal: literal, Line: line, Column: col}
 }
 
 func (l *Lexer) skipWhitespace() {
@@ -200,4 +199,27 @@ func isLetter(ch byte) bool {
 
 func isDigit(ch byte) bool {
 	return '0' <= ch && ch <= '9'
+}
+
+// keywords maps identifier strings to their corresponding token types.
+var keywords = map[string]TokenType{
+	"print":  TokenPrint,
+	"const":  TokenConst,
+	"proc":   TokenProc,
+	"return": TokenReturn,
+	"void":   TokenVoid,
+	"int":    TokenTypeLiteral,
+	"string": TokenTypeLiteral,
+	// Add other type keywords like "bool" here if needed
+}
+
+// lookupIdent checks if an identifier is a keyword, returning the keyword's
+// token type or TokenIdent if it's not a keyword.
+func lookupIdent(ident string) TokenType {
+	// Use case-sensitive lookup
+	if tokType, ok := keywords[ident]; ok {
+		return tokType
+	}
+	// Not a keyword, it's a user-defined identifier
+	return TokenIdent
 }

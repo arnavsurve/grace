@@ -1,4 +1,4 @@
-proc sayHi() {
+proc sayHi(): void {
 	print("hi from proc!")
 }
 

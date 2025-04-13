@@ -24,6 +24,7 @@ type Expression interface {
 	expressionNode()
 	ResultType() string
 	ResultWidth() int
+	GetToken() Token
 }
 
 // --- Symbol Info ---
@@ -31,7 +32,13 @@ type SymbolInfo struct {
 	Type    string // string, int, bool, proc, unknown, undeclared etc
 	Width   int
 	IsConst bool
-	// TODO: Add Proc specific info later (params, return type)
+
+	// --- Proc specific info ---
+	ParamNames  []string
+	ParamTypes  []string
+	ParamWidths []int
+	ReturnType  string
+	ReturnWidth int
 }
 
 // --- Program ---
@@ -161,27 +168,98 @@ func (bs *BlockStatement) String() string {
 	return out.String()
 }
 
+// ReturnStatement -> return expression or return
+type ReturnStatement struct {
+	Token       Token
+	ReturnValue Expression
+}
+
+func (rs *ReturnStatement) statementNode()       {}
+func (rs *ReturnStatement) TokenLiteral() string { return rs.Token.Literal }
+func (rs *ReturnStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString(rs.TokenLiteral()) // "return"
+	if rs.ReturnValue != nil {
+		out.WriteString(" ")
+		out.WriteString(rs.ReturnValue.String())
+	}
+	return out.String()
+}
+
+type TypeNode struct {
+	Token      Token  // The type token (e.g., 'int', 'string', 'void')
+	Name       string // "int", "string", "void"
+	WidthToken Token  // Optional width token (e.g., '10')
+	Width      int    // Parsed width (explicit or default), 0 for void
+	IsVoid     bool
+}
+
+func (tn *TypeNode) TokenLiteral() string { return tn.Token.Literal }
+func (tn *TypeNode) String() string {
+	if tn.IsVoid {
+		return "void"
+	}
+	s := tn.Name
+	// Only show width if it was *explicitly* provided via WidthToken
+	if tn.WidthToken.Type == TokenInt {
+		s += fmt.Sprintf("(%s)", tn.WidthToken.Literal)
+	}
+	return s
+}
+
+type Parameter struct {
+	Name     *Identifier
+	TypeNode *TypeNode
+}
+
+func (p *Parameter) String() string {
+	typeStr := p.TypeNode.Name
+	// Check if the width came from an explicit token
+	if p.TypeNode.WidthToken.Type == TokenInt {
+		typeStr += fmt.Sprintf("(%d)", p.TypeNode.Width) // Show explicit width
+	} else if p.TypeNode.Width > 0 && !p.TypeNode.IsVoid {
+		// If width > 0 but no explicit token, it was inferred (default)
+		typeStr += fmt.Sprintf("(default:%d)", p.TypeNode.Width) // Optional: Indicate default
+	} else if !p.TypeNode.IsVoid {
+		// Should not happen if parser enforces width correctly
+		typeStr += "(?)" // Indicate error if width somehow missing/invalid
+	}
+	return p.Name.String() + ": " + typeStr
+}
+
 // ProcDeclarationStatement -> proc name() { body }
 type ProcDeclarationStatement struct {
-	Token Token // The 'proc' token
-	Name  *Identifier
-	Body  *BlockStatement
-	// TODO: Parameters []Identifier
-	// TODO: ReturnType Node (Type Node)
+	Token      Token // The 'proc' token
+	Name       *Identifier
+	Parameters []*Parameter
+	ReturnType *TypeNode
+	Body       *BlockStatement
 }
 
 func (pds *ProcDeclarationStatement) statementNode()       {}
 func (pds *ProcDeclarationStatement) TokenLiteral() string { return pds.Token.Literal }
-
 func (pds *ProcDeclarationStatement) String() string {
 	var out bytes.Buffer
 	out.WriteString(pds.TokenLiteral() + " ") // "proc "
 	if pds.Name != nil {
 		out.WriteString(pds.Name.String())
 	}
-	out.WriteString("()") // Parentheses for parameters (empty for now)
-	// TODO: Add parameter list string representation later
-	// TODO: Add return type string representation later
+	out.WriteString("(")
+	params := []string{}
+	for _, p := range pds.Parameters {
+		params = append(params, p.String()) // Use Parameter's String()
+	}
+	out.WriteString(strings.Join(params, ", "))
+	out.WriteString(")")
+
+	out.WriteString(": ") // Return type is mandatory
+	if pds.ReturnType != nil {
+		out.WriteString(pds.ReturnType.String()) // Use TypeNode's String()
+	} else {
+		// Should not happen if parser enforces mandatory return type
+		out.WriteString("?")
+	}
+
 	out.WriteString(" ")
 	if pds.Body != nil {
 		out.WriteString(pds.Body.String()) // Uses BlockStatement's String()
@@ -219,6 +297,7 @@ func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
 func (i *Identifier) ResultType() string   { return i.ResolvedType }
 func (i *Identifier) ResultWidth() int     { return i.Width }
 func (i *Identifier) String() string       { return i.Value }
+func (i *Identifier) GetToken() Token      { return i.Token }
 
 // StringLiteral -> "hello"
 type StringLiteral struct {
@@ -232,8 +311,9 @@ func (sl *StringLiteral) TokenLiteral() string { return sl.Token.Literal }
 func (sl *StringLiteral) ResultType() string   { return "string" }
 func (sl *StringLiteral) ResultWidth() int     { return sl.Width }
 func (sl *StringLiteral) String() string {
-	return `"` + sl.Value + `"`
+	return fmt.Sprintf("%q", sl.Value)
 }
+func (sl *StringLiteral) GetToken() Token { return sl.Token }
 
 // IntegerLiteral -> 123
 type IntegerLiteral struct {
@@ -246,9 +326,10 @@ func (il *IntegerLiteral) expressionNode()      {}
 func (il *IntegerLiteral) TokenLiteral() string { return il.Token.Literal }
 func (il *IntegerLiteral) ResultType() string   { return "int" }
 func (il *IntegerLiteral) ResultWidth() int     { return il.Width }
-func (il *IntegerLiteral) String() string { // Format the integer as a string
-	return fmt.Sprintf("%d", il.Value)
+func (il *IntegerLiteral) String() string {
+	return il.Token.Literal // Return the original literal string
 }
+func (il *IntegerLiteral) GetToken() Token { return il.Token }
 
 // BinaryExpression -> (left + right)
 type BinaryExpression struct {
@@ -256,6 +337,11 @@ type BinaryExpression struct {
 	Left     Expression
 	Operator string // +, -, *, /
 	Right    Expression
+
+	// Cached results to avoid recalculation
+	cachedResultType  string
+	cachedResultWidth int
+	resultsCalculated bool
 }
 
 func (be *BinaryExpression) expressionNode()      {}
@@ -273,80 +359,122 @@ func (be *BinaryExpression) String() string {
 	out.WriteString(")")
 	return out.String()
 }
+func (be *BinaryExpression) GetToken() Token { return be.Token }
 
-func (be *BinaryExpression) ResultWidth() int {
-	// Calculate string concatenation width
-	if be.ResultType() == "string" {
+// calculateResults computes and caches type/width if not already done.
+// Called internally by ResultType and ResultWidth.
+func (be *BinaryExpression) calculateResults() {
+	if be.resultsCalculated {
+		return
+	}
+
+	leftType := be.Left.ResultType()
+	rightType := be.Right.ResultType()
+	be.cachedResultType = "unknown" // Default
+	be.cachedResultWidth = 0        // Default
+
+	// String Concatenation (+)
+	if leftType == "string" && rightType == "string" && be.Operator == "+" {
+		be.cachedResultType = "string"
 		leftLit, leftIsLit := be.Left.(*StringLiteral)
 		rightLit, rightIsLit := be.Right.(*StringLiteral)
-		if leftIsLit && rightIsLit {
-			return len(leftLit.Value) + len(rightLit.Value)
-		}
-		leftWidth := be.Left.ResultWidth()
-		rightWidth := be.Right.ResultWidth()
-		if leftWidth <= 0 {
-			leftWidth = lib.DefaultStringWidth
-		}
-		if rightWidth <= 0 {
-			rightWidth = lib.DefaultStringWidth
-		}
-		return leftWidth + rightWidth
-	}
-	// Integer width calculation
-	leftLit, leftIsLit := be.Left.(*IntegerLiteral)
-	rightLit, rightIsLit := be.Right.(*IntegerLiteral)
-	if leftIsLit && rightIsLit {
-		leftVal := leftLit.Value
-		rightVal := rightLit.Value
-		var resultVal int
-		switch be.Operator {
-		case "+":
-			resultVal = leftVal + rightVal
-		case "-":
-			resultVal = leftVal - rightVal
-		case "*":
-			resultVal = leftVal * rightVal
-		case "/":
-			if rightVal == 0 {
-				return lib.DefaultIntWidth
+		if leftIsLit && rightIsLit { // Constant folding width
+			be.cachedResultWidth = len(leftLit.Value) + len(rightLit.Value)
+		} else { // Heuristic width
+			leftWidth := be.Left.ResultWidth()
+			rightWidth := be.Right.ResultWidth()
+			if leftWidth <= 0 {
+				leftWidth = lib.DefaultStringWidth
 			}
-			resultVal = leftVal / rightVal
-		default:
-			return lib.DefaultIntWidth
+			if rightWidth <= 0 {
+				rightWidth = lib.DefaultStringWidth
+			}
+			be.cachedResultWidth = leftWidth + rightWidth
 		}
-		return lib.CalculateWidthForValue(resultVal)
 	}
-	// Fallback heuristics
-	leftWidth := be.Left.ResultWidth()
-	rightWidth := be.Right.ResultWidth()
-	if leftWidth <= 0 {
-		leftWidth = lib.DefaultIntWidth
+
+	// Integer Arithmetic (+, -, *, /)
+	if leftType == "int" && rightType == "int" {
+		// Check if operator is valid for int
+		isValidIntOp := false
+		switch be.Operator {
+		case "+", "-", "*", "/":
+			isValidIntOp = true
+		}
+
+		if isValidIntOp {
+			be.cachedResultType = "int"
+			leftLit, leftIsLit := be.Left.(*IntegerLiteral)
+			rightLit, rightIsLit := be.Right.(*IntegerLiteral)
+			if leftIsLit && rightIsLit { // Constant folding width
+				leftVal := leftLit.Value
+				rightVal := rightLit.Value
+				var resultVal int
+				switch be.Operator {
+				case "+":
+					resultVal = leftVal + rightVal
+				case "-":
+					resultVal = leftVal - rightVal
+				case "*":
+					resultVal = leftVal * rightVal
+				case "/":
+					if rightVal == 0 {
+						// Parser should add error. Width remains 0 or default.
+						// Use default width to avoid subsequent errors assuming 0 width.
+						be.cachedResultWidth = lib.DefaultIntWidth
+					} else {
+						resultVal = leftVal / rightVal
+					}
+				}
+				// Calculate width only if division was valid or op wasn't division
+				if !(be.Operator == "/" && rightVal == 0) {
+					be.cachedResultWidth = lib.CalculateWidthForValue(resultVal)
+				}
+
+			} else { // Heuristic width
+				leftWidth := be.Left.ResultWidth()
+				rightWidth := be.Right.ResultWidth()
+				if leftWidth <= 0 {
+					leftWidth = lib.DefaultIntWidth
+				}
+				if rightWidth <= 0 {
+					rightWidth = lib.DefaultIntWidth
+				}
+
+				switch be.Operator {
+				case "+", "-":
+					maxWidth := max(leftWidth, rightWidth)
+					be.cachedResultWidth = maxWidth + 1
+				case "*":
+					// Result width can be sum of operand widths
+					be.cachedResultWidth = leftWidth + rightWidth
+				case "/":
+					// Result width is typically <= dividend width
+					be.cachedResultWidth = leftWidth
+				}
+			}
+		}
 	}
-	if rightWidth <= 0 {
-		rightWidth = lib.DefaultIntWidth
+
+	// Ensure width is at least default if type is known but width calculation failed/resulted in 0
+	if be.cachedResultType == "int" && be.cachedResultWidth <= 0 {
+		be.cachedResultWidth = lib.DefaultIntWidth
 	}
-	switch be.Operator {
-	case "+", "-":
-		return max(leftWidth, rightWidth) + 1
-	case "*":
-		return leftWidth + rightWidth
-	case "/":
-		return leftWidth
-	default:
-		return lib.DefaultIntWidth
+	if be.cachedResultType == "string" && be.cachedResultWidth <= 0 {
+		be.cachedResultWidth = lib.DefaultStringWidth
 	}
+
+	be.resultsCalculated = true
+}
+
+func (be *BinaryExpression) ResultWidth() int {
+	be.calculateResults()
+	return be.cachedResultWidth
 }
 
 func (be *BinaryExpression) ResultType() string {
-	leftType := be.Left.ResultType()
-	rightType := be.Right.ResultType()
-	if leftType == "int" && rightType == "int" {
-		return "int"
-	}
-	if leftType == "string" && rightType == "string" && be.Operator == "+" {
-		return "string"
-	}
-	return "unknown"
+	be.calculateResults()
+	return be.cachedResultType
 }
 
 // GroupedExpression -> (expression)
@@ -377,18 +505,21 @@ func (ge *GroupedExpression) ResultWidth() int {
 	}
 	return 0
 }
+func (ge *GroupedExpression) GetToken() Token { return ge.Token }
 
 // ProcCallExpression represents 'funcName(arg1, arg2)'
 type ProcCallExpression struct {
-	Token     Token        // The function name token
-	Function  *Identifier  // The identifier for the function
-	Arguments []Expression // List of argument expressions
+	Token               Token        // The function name token
+	Function            *Identifier  // The identifier for the function
+	Arguments           []Expression // List of argument expressions
+	ResolvedReturnType  string
+	ResolvedReturnWidth int
 }
 
 func (pce *ProcCallExpression) expressionNode()      {}
 func (pce *ProcCallExpression) TokenLiteral() string { return pce.Token.Literal }
-func (pce *ProcCallExpression) ResultType() string   { return "void" } // TODO: Update when functions return values
-func (pce *ProcCallExpression) ResultWidth() int     { return 0 }      // TODO: Update when functions return values
+func (pce *ProcCallExpression) ResultType() string   { return pce.ResolvedReturnType }
+func (pce *ProcCallExpression) ResultWidth() int     { return pce.ResolvedReturnWidth }
 func (pce *ProcCallExpression) String() string {
 	var out bytes.Buffer
 	args := []string{}
@@ -405,3 +536,4 @@ func (pce *ProcCallExpression) String() string {
 	out.WriteString(")")
 	return out.String()
 }
+func (pce *ProcCallExpression) GetToken() Token { return pce.Token }

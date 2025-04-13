@@ -14,11 +14,16 @@ const (
 	TokenAsterisk TokenType = "ASTERISK" // *
 	TokenSlash    TokenType = "SLASH"    // / (division)
 	TokenColon    TokenType = "COLON"    // :
+	TokenComma    TokenType = "COMMA"    // ,
 
 	// Keywords
-	TokenPrint TokenType = "PRINT" // print
-	TokenConst TokenType = "CONST" // const
-	TokenProc  TokenType = "PROC"
+	TokenPrint  TokenType = "PRINT"  // print
+	TokenConst  TokenType = "CONST"  // const
+	TokenProc   TokenType = "PROC"   // proc
+	TokenReturn TokenType = "RETURN" // return
+	TokenVoid   TokenType = "VOID"   // void (used as a type literal)
+	// NOTE: TokenVOid is also lexed and can be checked specifically,
+	// but is often treated like a TokenTypeLiteral in parsing logic for type nodes
 
 	// Literals
 	TokenString TokenType = "STRING" // "..."

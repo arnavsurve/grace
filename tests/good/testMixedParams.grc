@@ -1,0 +1,19 @@
+// testMixedParams.grc
+// Purpose: Test handling multiple parameters of different types and widths.
+
+proc processData(id: int(8), name: string(25), active: int(1)): string(30) {
+    print("Processing Data...")
+    // Cannot use id, name, active yet
+    return "Processed Record" // Fixed return
+}
+
+userId := 12345678
+userName := "Test User Alpha"
+userActive := 1 // Assume 1 for true, 0 for false
+
+statusMsg := processData(userId, userName, userActive)
+print(statusMsg)
+
+// Call with literals
+statusMsg2 := processData(987, "Beta", 0)
+print(statusMsg2)

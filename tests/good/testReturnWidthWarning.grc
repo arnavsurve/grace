@@ -1,0 +1,21 @@
+// testReturnWidthWarning.grc
+// Purpose: Test parser warning when returned literal might exceed declared width.
+
+// Declared width 10, literal is longer
+proc getShortString(): string(10) {
+    return "This literal is definitely longer than ten"
+}
+
+// Declared width 3, literal needs 4
+proc getShortInt(): int(3) {
+    return 5000
+}
+
+
+s := getShortString()
+i := getShortInt()
+
+print("String (might be truncated by COBOL):")
+print(s)
+print("Int (might be truncated by COBOL):")
+print(i)
