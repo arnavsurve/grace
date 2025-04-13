@@ -81,7 +81,7 @@ func (e *Emitter) emitA(line string) {
 }
 
 // emitB writes a line to Area B, ensuring it ends with a period.
-// Handles basic string literal continuation for DISPLAY.
+// Handles string literal continuation for DISPLAY "literal" and MOVE "literal" TO var.
 func (e *Emitter) emitB(line string) {
 	trimmedLine := strings.TrimSpace(line)
 	if trimmedLine == "" {
@@ -93,33 +93,50 @@ func (e *Emitter) emitB(line string) {
 		parts := strings.SplitN(trimmedLine, " ", 2)
 		if len(parts) == 2 {
 			content := strings.TrimSpace(parts[1])
-			content = strings.TrimSuffix(content, ".")
+			originalHadPeriod := strings.HasSuffix(content, ".")
+			if originalHadPeriod {
+				content = content[:len(content)-1]
+			} // Remove period for processing
 			isQuoted := len(content) >= 2 && content[0] == '"' && content[len(content)-1] == '"'
 
 			if isQuoted {
 				literalContent := content[1 : len(content)-1]
-				// Calculate max length for the string, accounting for quotes and period
-				maxLen := cobolLineEndCol - (len(areaBIndent) + len("DISPLAY ") + 3) // -3 for " and .
 
-				// --- Single-line fits, emit normally ---
-				if len(literalContent) <= maxLen {
+				// Check if the *entire original* statement fits
+				fullDisplayStmtLen := len(areaBIndent) + len("DISPLAY ") + len(content) + 1 // +1 for period
+				if fullDisplayStmtLen <= cobolLineEndCol {
 					e.builder.WriteString(fmt.Sprintf("%sDISPLAY \"%s\".\n", areaBIndent, literalContent))
 					return
 				}
 
-				// --- Multi-line handling ---
-				firstChunkLen := maxLen
-				firstChunk := literalContent[:firstChunkLen]
-				remaining := literalContent[firstChunkLen:]
+				// --- Multi-line handling for DISPLAY (if entire stmt doesn't fit) ---
+				// Calculate how much of the literal can fit on the *first* line
+				maxFirstChunkLen := cobolLineEndCol - (len(areaBIndent) + len("DISPLAY ") + 2) // "literal"
+				if maxFirstChunkLen < 0 {
+					maxFirstChunkLen = 0
+				} // Safety
 
-				// Emit first line without & inside string
+				firstChunk := literalContent
+				if len(firstChunk) > maxFirstChunkLen {
+					firstChunk = firstChunk[:maxFirstChunkLen]
+				}
+				remaining := literalContent[len(firstChunk):]
+
+				// Emit first line
 				e.builder.WriteString(fmt.Sprintf("%sDISPLAY \"%s\"\n", areaBIndent, firstChunk))
 
+				// Max length for subsequent chunks
+				maxLenContinue := cobolLineEndCol - len(continuationPrefix) - 2 // -"literal"
+				if maxLenContinue < 0 {
+					maxLenContinue = 0
+				} // Safety
+
 				for len(remaining) > 0 {
-					chunkLen := cobolLineEndCol - cobolAreaBCol - 2 // -2 for quotes
+					chunkLen := maxLenContinue
 					if chunkLen <= 0 {
 						chunkLen = 1
-					}
+					} // Ensure progress
+
 					currChunk := remaining
 					if len(currChunk) > chunkLen {
 						currChunk = currChunk[:chunkLen]
@@ -127,21 +144,165 @@ func (e *Emitter) emitB(line string) {
 					remaining = remaining[len(currChunk):]
 
 					// Emit continuation line
-					prefix := "      -    " // 6 spaces + "-" + 4 spaces to reach col 12
-					e.builder.WriteString(fmt.Sprintf(`%s"%s"`, prefix, currChunk))
+					e.builder.WriteString(fmt.Sprintf("%s\"%s\"", continuationPrefix, currChunk))
+					if len(remaining) > 0 {
+						e.builder.WriteString("\n") // Newline if more chunks follow
+					}
 				}
-				// Add final period after last chunk
+				// Add final period after the last chunk
 				e.builder.WriteString(".\n")
 				return
 			}
 		}
+		// If not a simple DISPLAY "literal", fall through to standard handling
 	}
 
-	// --- Fallback: Standard line with period ---
-	if !strings.HasSuffix(trimmedLine, ".") {
-		trimmedLine += "."
+	// --- Special Handling for MOVE String Literals ---
+	if strings.HasPrefix(trimmedLine, "MOVE \"") {
+		idxLiteralStart := len("MOVE \"")
+		idxLiteralEndQuote := -1
+		idxToKeyword := -1
+
+		// Find the last quote potentially before " TO "
+		lastQuote := strings.LastIndex(trimmedLine, "\"")
+		if lastQuote > idxLiteralStart { // Ensure it's not the opening quote
+			// Look for " TO " after this potential closing quote
+			tempIdx := strings.Index(trimmedLine[lastQuote:], " TO ")
+			if tempIdx != -1 {
+				idxLiteralEndQuote = lastQuote
+				idxToKeyword = lastQuote + tempIdx
+			}
+		}
+
+		if idxLiteralEndQuote != -1 && idxToKeyword != -1 {
+			literalContent := trimmedLine[idxLiteralStart:idxLiteralEndQuote]
+			// Extract the " TO variable" part, keep space before TO
+			suffixPart := strings.TrimSpace(trimmedLine[idxToKeyword:])
+			suffixPart = strings.TrimSuffix(suffixPart, ".") // Keep "TO variable"
+
+			// --- Check if the entire original statement fits ---
+			originalLineLength := len(areaBIndent) + len(trimmedLine)
+			if !strings.HasSuffix(trimmedLine, ".") {
+				originalLineLength++ // Account for adding the period later
+			}
+
+			if originalLineLength <= cobolLineEndCol {
+				// Fits on one line, use standard handling (adds period)
+				finalLine := trimmedLine
+				if !strings.HasSuffix(finalLine, ".") {
+					finalLine += "."
+				}
+				e.builder.WriteString(areaBIndent + finalLine + "\n")
+				return
+			}
+
+			// --- Multi-line handling for MOVE (triggered because full line doesn't fit) ---
+
+			// Calculate max length for the string literal chunk on the *first* MOVE line
+			maxLenFirstLineLiteral := cobolLineEndCol - (len(areaBIndent) + len("MOVE ") + 2) // "literal"
+			if maxLenFirstLineLiteral < 0 {
+				maxLenFirstLineLiteral = 0
+			}
+
+			firstChunk := literalContent
+			if len(firstChunk) > maxLenFirstLineLiteral {
+				firstChunk = firstChunk[:maxLenFirstLineLiteral]
+			}
+			remainingLiteral := literalContent[len(firstChunk):]
+
+			// Emit first line: MOVE "chunk"
+			e.builder.WriteString(fmt.Sprintf("%sMOVE \"%s\"\n", areaBIndent, firstChunk))
+
+			// Max length for subsequent literal chunks on continuation lines
+			maxLenContinueLiteral := cobolLineEndCol - len(continuationPrefix) - 2 // -"literal"
+			if maxLenContinueLiteral < 0 {
+				maxLenContinueLiteral = 0
+			}
+
+			lastLiteralLineContent := "" // Track the content written on the last line used for literals
+
+			// Loop through remaining literal parts (if any)
+			for len(remainingLiteral) > 0 {
+				chunkLen := maxLenContinueLiteral
+				if chunkLen <= 0 {
+					chunkLen = 1
+				} // Ensure progress
+
+				currChunk := remainingLiteral
+				if len(currChunk) > chunkLen {
+					currChunk = currChunk[:chunkLen]
+				}
+				remainingLiteral = remainingLiteral[len(currChunk):]
+
+				// Emit continuation line: -"chunk"
+				lastLiteralLineContent = fmt.Sprintf("%s\"%s\"", continuationPrefix, currChunk)
+				e.builder.WriteString(lastLiteralLineContent)
+
+				if len(remainingLiteral) > 0 {
+					// More literal chunks follow, end this line
+					e.builder.WriteString("\n")
+					lastLiteralLineContent = "" // Reset as this line is finished
+				}
+				// If it was the last chunk, DO NOT add newline yet, suffix might append.
+			}
+
+			// --- Now, append the suffix ---
+			suffixWithSpaceAndPeriod := fmt.Sprintf(" %s.", suffixPart) // Add leading space and period
+
+			if lastLiteralLineContent != "" {
+				// Suffix needs to be appended to the last literal line
+				if len(lastLiteralLineContent)+len(suffixWithSpaceAndPeriod) <= cobolLineEndCol {
+					// Append suffix to the current line
+					e.builder.WriteString(suffixWithSpaceAndPeriod + "\n")
+				} else {
+					// Suffix doesn't fit on the last literal line, needs its own cont. line
+					e.builder.WriteString("\n") // End the last literal line
+					e.builder.WriteString(fmt.Sprintf("%s %s.\n", continuationPrefix, suffixPart))
+				}
+			} else {
+				// The entire literal fit on the *first* line (e.g., MOVE "chunk"\n)
+				// We already know the suffix didn't fit on that first line (from originalLineLength check)
+				// So, the suffix *must* go on a new continuation line.
+				e.builder.WriteString(fmt.Sprintf("%s %s.\n", continuationPrefix, suffixPart))
+			}
+			return // Finished handling multi-line MOVE
+		}
+		// If parsing MOVE "..." TO ... failed, fall through
 	}
-	e.builder.WriteString(areaBIndent + trimmedLine + "\n")
+
+	// --- Fallback: Standard line handling (add period if needed) ---
+	needsPeriod := true
+	noPeriodPrefixes := []string{
+		"IDENTIFICATION DIVISION", "PROGRAM-ID", "DATA DIVISION",
+		"WORKING-STORAGE SECTION", "PROCEDURE DIVISION", "DECLARATIVES",
+		"END DECLARATIVES",
+	}
+	isSectionHeader := strings.HasSuffix(trimmedLine, " SECTION.")
+
+	for _, prefix := range noPeriodPrefixes {
+		if strings.HasPrefix(trimmedLine, prefix) {
+			needsPeriod = false
+			break
+		}
+	}
+	if isSectionHeader {
+		needsPeriod = false
+	}
+	if strings.HasSuffix(trimmedLine, ".") {
+		needsPeriod = false
+	}
+
+	finalLine := trimmedLine
+	if needsPeriod {
+		finalLine += "."
+	}
+
+	// Check length before writing (basic safety for non-handled lines)
+	if len(areaBIndent+finalLine) > cobolLineEndCol {
+		e.addError("Emitter Warning: Generated COBOL line may exceed %d columns: %s", cobolLineEndCol, areaBIndent+finalLine)
+	}
+
+	e.builder.WriteString(areaBIndent + finalLine + "\n")
 }
 
 func (e *Emitter) emitComment(comment string) {
