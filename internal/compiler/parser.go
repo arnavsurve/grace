@@ -896,11 +896,28 @@ func (p *Parser) parseReturnStatement() Statement {
 		// --- Semantic Check: Return width compatibility (Warning) ---
 		valueWidth := returnValue.ResultWidth()
 		declaredWidth := procInfo.ReturnWidth
-		// Only warn if both widths are known and positive, and value > declared
-		if valueType != "unknown" && valueType != "void" && valueWidth > 0 && declaredWidth > 0 && valueWidth > declaredWidth {
-			p.addWarning(returnValue.GetToken(), "Width of returned value (%d) may exceed declared return width (%d) for procedure '%s'. Potential truncation.", valueWidth, declaredWidth, p.currentProcName)
+		// Check only if types are compatible/known, widths are positive, and value > declared
+		if valueType != "unknown" && valueType != "void" && valueType == procInfo.ReturnType && valueWidth > 0 && declaredWidth > 0 && valueWidth > declaredWidth {
+
+			// Check if the returned value is a literal
+			isLiteralReturn := false
+			if _, ok := returnValue.(*IntegerLiteral); ok {
+				isLiteralReturn = true
+			}
+			if _, ok := returnValue.(*StringLiteral); ok {
+				isLiteralReturn = true
+			}
+
+			if isLiteralReturn {
+				// ERROR for literals exceeding declared width
+				p.addSemanticError(returnValue.GetToken(), "Literal return value width (%d) exceeds declared return width (%d) for procedure '%s'", valueWidth, declaredWidth, p.currentProcName)
+			} else {
+				// WARNING for non-literals (variables, expressions) - Keep this as a warning
+				p.addWarning(returnValue.GetToken(), "Width of returned expression (%d) may exceed declared return width (%d) for procedure '%s'. Potential truncation.", valueWidth, declaredWidth, p.currentProcName)
+			}
+
 		} else if valueType != "unknown" && valueType != "void" && declaredWidth <= 0 && procInfo.ReturnType != "void" {
-			// This indicates an issue with return type declaration/parsing in the proc definition
+			// Existing warning about invalid declared width in proc signature
 			p.addWarning(returnTok, "Could not verify return width for procedure '%s'; declared width is invalid (%d).", p.currentProcName, declaredWidth)
 		}
 	}
