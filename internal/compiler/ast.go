@@ -537,3 +537,93 @@ func (pce *ProcCallExpression) String() string {
 	return out.String()
 }
 func (pce *ProcCallExpression) GetToken() Token { return pce.Token }
+
+// Helper for pretty printing AST to bless it with my chud eyes
+func PrintAST(node Node, indent string) {
+	switch n := node.(type) {
+	case *Program:
+		fmt.Println(indent + "Program")
+		for _, stmt := range n.Statements {
+			PrintAST(stmt, indent+"  ")
+		}
+
+	case *DeclarationStatement:
+		fmt.Println(indent + "DeclarationStatement")
+		fmt.Println(indent+"  Name:", n.Name.String())
+		fmt.Println(indent+"  IsConst:", n.IsConst)
+		if n.HasExplicitType {
+			fmt.Println(indent+"  Type:", n.ExplicitTypeToken.Literal)
+			fmt.Println(indent+"  Width:", n.ExplicitWidthToken.Literal)
+		} else {
+			fmt.Println(indent + "  Type: inferred")
+		}
+		fmt.Println(indent + "  Value:")
+		PrintAST(n.Value, indent+"    ")
+
+	case *ReassignmentStatement:
+		fmt.Println(indent + "ReassignmentStatement")
+		fmt.Println(indent+"  Name:", n.Name.String())
+		fmt.Println(indent + "  Value:")
+		PrintAST(n.Value, indent+"    ")
+
+	case *PrintStatement:
+		fmt.Println(indent + "PrintStatement")
+		PrintAST(n.Value, indent+"  ")
+
+	case *ReturnStatement:
+		fmt.Println(indent + "ReturnStatement")
+		PrintAST(n.ReturnValue, indent+"  ")
+
+	case *ExpressionStatement:
+		fmt.Println(indent + "ExpressionStatement")
+		PrintAST(n.Expression, indent+"  ")
+
+	case *ProcDeclarationStatement:
+		fmt.Println(indent + "ProcDeclarationStatement")
+		fmt.Println(indent+"  Name:", n.Name.String())
+		fmt.Println(indent + "  Params:")
+		for _, param := range n.Parameters {
+			fmt.Println(indent+"    "+param.Name.String()+":", param.TypeNode.String())
+		}
+		fmt.Println(indent+"  ReturnType:", n.ReturnType.String())
+		PrintAST(n.Body, indent+"  ")
+
+	case *BlockStatement:
+		fmt.Println(indent + "BlockStatement")
+		for _, stmt := range n.Statements {
+			PrintAST(stmt, indent+"  ")
+		}
+
+	case *Identifier:
+		fmt.Println(indent+"Identifier:", n.Value)
+
+	case *StringLiteral:
+		fmt.Println(indent+"StringLiteral:", fmt.Sprintf("%q", n.Value))
+
+	case *IntegerLiteral:
+		fmt.Println(indent+"IntegerLiteral:", n.Value)
+
+	case *BinaryExpression:
+		fmt.Println(indent + "BinaryExpression")
+		fmt.Println(indent+"  Operator:", n.Operator)
+		fmt.Println(indent + "  Left:")
+		PrintAST(n.Left, indent+"    ")
+		fmt.Println(indent + "  Right:")
+		PrintAST(n.Right, indent+"    ")
+
+	case *GroupedExpression:
+		fmt.Println(indent + "GroupedExpression")
+		PrintAST(n.Expression, indent+"  ")
+
+	case *ProcCallExpression:
+		fmt.Println(indent + "ProcCallExpression")
+		fmt.Println(indent+"  Function:", n.Function.String())
+		for i, arg := range n.Arguments {
+			fmt.Printf(indent+"  Arg[%d]:\n", i)
+			PrintAST(arg, indent+"    ")
+		}
+
+	default:
+		fmt.Printf("%s<unknown node type: %T>\n", indent, n)
+	}
+}

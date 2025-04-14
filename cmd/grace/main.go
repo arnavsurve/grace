@@ -51,7 +51,7 @@ func main() {
 
 	fmt.Println("AST:")
 	for _, stmt := range program.Statements {
-		fmt.Printf("%#v\n", stmt)
+		compiler.PrintAST(stmt, "")
 	}
 	fmt.Println()
 
