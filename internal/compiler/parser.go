@@ -65,18 +65,18 @@ func (p *Parser) nextToken() {
 
 func (p *Parser) addError(tok Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	p.errors = append(p.errors, fmt.Sprintf("Line %d, Col %d: Syntax Error: %s", tok.Line, tok.Column, msg))
+	p.errors = append(p.errors, fmt.Sprintf("%d:%d: Syntax Error: %s", tok.Line, tok.Column, msg))
 }
 
 func (p *Parser) addSemanticError(tok Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	p.errors = append(p.errors, fmt.Sprintf("Line %d, Col %d: Semantic Error: %s", tok.Line, tok.Column, msg))
+	p.errors = append(p.errors, fmt.Sprintf("%d:%d: Semantic Error: %s", tok.Line, tok.Column, msg))
 }
 
 func (p *Parser) addWarning(tok Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	// Prefix warnings for clarity
-	p.warnings = append(p.warnings, fmt.Sprintf("Line %d, Col %d: Semantic Warning: %s", tok.Line, tok.Column, msg))
+	p.warnings = append(p.warnings, fmt.Sprintf("%d:%d: Semantic Warning: %s", tok.Line, tok.Column, msg))
 }
 
 // Errors returns only fatal errors
