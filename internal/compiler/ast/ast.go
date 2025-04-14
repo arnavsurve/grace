@@ -1,4 +1,4 @@
-package compiler
+package ast
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/arnavsurve/grace/internal/compiler/lib"
+	"github.com/arnavsurve/grace/internal/compiler/token"
 )
 
 // --- Interfaces ---
@@ -24,7 +25,7 @@ type Expression interface {
 	expressionNode()
 	ResultType() string
 	ResultWidth() int
-	GetToken() Token
+	GetToken() token.Token
 }
 
 // --- Symbol Info ---
@@ -69,7 +70,7 @@ func (p *Program) String() string {
 
 // PrintStatement -> print("hello") or print(var)
 type PrintStatement struct {
-	Token Token // print
+	Token token.Token // print
 	Value Expression
 }
 
@@ -87,12 +88,12 @@ func (ps *PrintStatement) String() string {
 
 // DeclarationStatement -> x := 123 or const y : string = "hi"
 type DeclarationStatement struct {
-	Token              Token // := or = (depending on explicit type)
+	Token              token.Token // := or = (depending on explicit type)
 	IsConst            bool
 	Name               *Identifier
 	HasExplicitType    bool
-	ExplicitTypeToken  Token
-	ExplicitWidthToken Token
+	ExplicitTypeToken  token.Token
+	ExplicitWidthToken token.Token
 	Value              Expression
 }
 
@@ -130,7 +131,7 @@ func (ds *DeclarationStatement) String() string {
 
 // ReassignmentStatement -> x = 456
 type ReassignmentStatement struct {
-	Token Token // =
+	Token token.Token // =
 	Name  *Identifier
 	Value Expression
 }
@@ -151,7 +152,7 @@ func (rs *ReassignmentStatement) String() string {
 
 // BlockStatement -> { statement1 \n statement2 }
 type BlockStatement struct {
-	Token      Token // {
+	Token      token.Token // {
 	Statements []Statement
 }
 
@@ -170,7 +171,7 @@ func (bs *BlockStatement) String() string {
 
 // ReturnStatement -> return expression or return
 type ReturnStatement struct {
-	Token       Token
+	Token       token.Token
 	ReturnValue Expression
 }
 
@@ -187,10 +188,10 @@ func (rs *ReturnStatement) String() string {
 }
 
 type TypeNode struct {
-	Token      Token  // The type token (e.g., 'int', 'string', 'void')
-	Name       string // "int", "string", "void"
-	WidthToken Token  // Optional width token (e.g., '10')
-	Width      int    // Parsed width (explicit or default), 0 for void
+	Token      token.Token // The type token (e.g., 'int', 'string', 'void')
+	Name       string      // "int", "string", "void"
+	WidthToken token.Token // Optional width token (e.g., '10')
+	Width      int         // Parsed width (explicit or default), 0 for void
 	IsVoid     bool
 }
 
@@ -201,7 +202,7 @@ func (tn *TypeNode) String() string {
 	}
 	s := tn.Name
 	// Only show width if it was *explicitly* provided via WidthToken
-	if tn.WidthToken.Type == TokenInt {
+	if tn.WidthToken.Type == token.TokenInt {
 		s += fmt.Sprintf("(%s)", tn.WidthToken.Literal)
 	}
 	return s
@@ -215,7 +216,7 @@ type Parameter struct {
 func (p *Parameter) String() string {
 	typeStr := p.TypeNode.Name
 	// Check if the width came from an explicit token
-	if p.TypeNode.WidthToken.Type == TokenInt {
+	if p.TypeNode.WidthToken.Type == token.TokenInt {
 		typeStr += fmt.Sprintf("(%d)", p.TypeNode.Width) // Show explicit width
 	} else if p.TypeNode.Width > 0 && !p.TypeNode.IsVoid {
 		// If width > 0 but no explicit token, it was inferred (default)
@@ -229,7 +230,7 @@ func (p *Parameter) String() string {
 
 // ProcDeclarationStatement -> proc name() { body }
 type ProcDeclarationStatement struct {
-	Token      Token // The 'proc' token
+	Token      token.Token // The 'proc' token
 	Name       *Identifier
 	Parameters []*Parameter
 	ReturnType *TypeNode
@@ -269,7 +270,7 @@ func (pds *ProcDeclarationStatement) String() string {
 
 // ExpressionStatement wraps an expression to be used as a statement (e.g., a function call)
 type ExpressionStatement struct {
-	Token      Token // the first token of the expression
+	Token      token.Token // the first token of the expression
 	Expression Expression
 }
 
@@ -286,22 +287,22 @@ func (es *ExpressionStatement) String() string {
 
 // Identifier -> varName
 type Identifier struct {
-	Token        Token // IDENT
+	Token        token.Token // IDENT
 	Value        string
 	Width        int
 	ResolvedType string // Store the resolved type during parsing/semantic analysis
 }
 
-func (i *Identifier) expressionNode()      {}
-func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
-func (i *Identifier) ResultType() string   { return i.ResolvedType }
-func (i *Identifier) ResultWidth() int     { return i.Width }
-func (i *Identifier) String() string       { return i.Value }
-func (i *Identifier) GetToken() Token      { return i.Token }
+func (i *Identifier) expressionNode()       {}
+func (i *Identifier) TokenLiteral() string  { return i.Token.Literal }
+func (i *Identifier) ResultType() string    { return i.ResolvedType }
+func (i *Identifier) ResultWidth() int      { return i.Width }
+func (i *Identifier) String() string        { return i.Value }
+func (i *Identifier) GetToken() token.Token { return i.Token }
 
 // StringLiteral -> "hello"
 type StringLiteral struct {
-	Token Token
+	Token token.Token
 	Value string
 	Width int
 }
@@ -313,11 +314,11 @@ func (sl *StringLiteral) ResultWidth() int     { return sl.Width }
 func (sl *StringLiteral) String() string {
 	return fmt.Sprintf("%q", sl.Value)
 }
-func (sl *StringLiteral) GetToken() Token { return sl.Token }
+func (sl *StringLiteral) GetToken() token.Token { return sl.Token }
 
 // IntegerLiteral -> 123
 type IntegerLiteral struct {
-	Token Token
+	Token token.Token
 	Value int
 	Width int
 }
@@ -329,11 +330,11 @@ func (il *IntegerLiteral) ResultWidth() int     { return il.Width }
 func (il *IntegerLiteral) String() string {
 	return il.Token.Literal // Return the original literal string
 }
-func (il *IntegerLiteral) GetToken() Token { return il.Token }
+func (il *IntegerLiteral) GetToken() token.Token { return il.Token }
 
 // BinaryExpression -> (left + right)
 type BinaryExpression struct {
-	Token    Token // +, -, *, /
+	Token    token.Token // +, -, *, /
 	Left     Expression
 	Operator string // +, -, *, /
 	Right    Expression
@@ -359,7 +360,7 @@ func (be *BinaryExpression) String() string {
 	out.WriteString(")")
 	return out.String()
 }
-func (be *BinaryExpression) GetToken() Token { return be.Token }
+func (be *BinaryExpression) GetToken() token.Token { return be.Token }
 
 // calculateResults computes and caches type/width if not already done.
 // Called internally by ResultType and ResultWidth.
@@ -479,7 +480,7 @@ func (be *BinaryExpression) ResultType() string {
 
 // GroupedExpression -> (expression)
 type GroupedExpression struct {
-	Token      Token // '('
+	Token      token.Token // '('
 	Expression Expression
 }
 
@@ -505,11 +506,11 @@ func (ge *GroupedExpression) ResultWidth() int {
 	}
 	return 0
 }
-func (ge *GroupedExpression) GetToken() Token { return ge.Token }
+func (ge *GroupedExpression) GetToken() token.Token { return ge.Token }
 
 // ProcCallExpression represents 'funcName(arg1, arg2)'
 type ProcCallExpression struct {
-	Token               Token        // The function name token
+	Token               token.Token  // The function name token
 	Function            *Identifier  // The identifier for the function
 	Arguments           []Expression // List of argument expressions
 	ResolvedReturnType  string
@@ -536,7 +537,7 @@ func (pce *ProcCallExpression) String() string {
 	out.WriteString(")")
 	return out.String()
 }
-func (pce *ProcCallExpression) GetToken() Token { return pce.Token }
+func (pce *ProcCallExpression) GetToken() token.Token { return pce.Token }
 
 // Helper for pretty printing AST to bless it with my chud eyes
 func PrintAST(node Node, indent string) {

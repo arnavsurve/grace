@@ -1,11 +1,14 @@
-package compiler
+package parser
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/arnavsurve/grace/internal/compiler/ast"
+	"github.com/arnavsurve/grace/internal/compiler/lexer"
 	"github.com/arnavsurve/grace/internal/compiler/lib"
+	"github.com/arnavsurve/grace/internal/compiler/token"
 )
 
 // Precedence levels for Pratt parsing
@@ -19,15 +22,15 @@ const (
 )
 
 // Map tokens to precedence levels
-var precedences = map[TokenType]int{
-	TokenPlus:     PrecSum,
-	TokenMinus:    PrecSum,
-	TokenAsterisk: PrecProduct,
-	TokenSlash:    PrecProduct,
-	TokenLParen:   PrecCall, // For function calls like identifier(...)
+var precedences = map[token.TokenType]int{
+	token.TokenPlus:     PrecSum,
+	token.TokenMinus:    PrecSum,
+	token.TokenAsterisk: PrecProduct,
+	token.TokenSlash:    PrecProduct,
+	token.TokenLParen:   PrecCall, // For function calls like identifier(...)
 }
 
-func tokenPrecedence(tok Token) int {
+func tokenPrecedence(tok token.Token) int {
 	if p, ok := precedences[tok.Type]; ok {
 		return p
 	}
@@ -35,22 +38,22 @@ func tokenPrecedence(tok Token) int {
 }
 
 type Parser struct {
-	l               *Lexer
-	curTok          Token
-	peekTok         Token
+	l               *lexer.Lexer
+	curTok          token.Token
+	peekTok         token.Token
 	errors          []string
-	warnings        []string              // Separate warnings
-	symbolTable     map[string]SymbolInfo // Global symbol table (includes procs and globals)
-	currentProcName string                // Track the current procedure being parsed for return checks
+	warnings        []string                  // Separate warnings
+	symbolTable     map[string]ast.SymbolInfo // Global symbol table (includes procs and globals)
+	currentProcName string                    // Track the current procedure being parsed for return checks
 	// TODO: Implement proper scoping (e.g., nested symbol tables)
 }
 
-func NewParser(l *Lexer) *Parser {
+func NewParser(l *lexer.Lexer) *Parser {
 	p := &Parser{
 		l:               l,
 		errors:          []string{},
 		warnings:        []string{},
-		symbolTable:     make(map[string]SymbolInfo),
+		symbolTable:     make(map[string]ast.SymbolInfo),
 		currentProcName: "", // Not inside a proc initially
 	}
 	p.nextToken() // Initialize curTok
@@ -63,17 +66,17 @@ func (p *Parser) nextToken() {
 	p.peekTok = p.l.NextToken()
 }
 
-func (p *Parser) addError(tok Token, format string, args ...any) {
+func (p *Parser) addError(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	p.errors = append(p.errors, fmt.Sprintf("%d:%d: Syntax Error: %s", tok.Line, tok.Column, msg))
 }
 
-func (p *Parser) addSemanticError(tok Token, format string, args ...any) {
+func (p *Parser) addSemanticError(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	p.errors = append(p.errors, fmt.Sprintf("%d:%d: Semantic Error: %s", tok.Line, tok.Column, msg))
 }
 
-func (p *Parser) addWarning(tok Token, format string, args ...any) {
+func (p *Parser) addWarning(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	// Prefix warnings for clarity
 	p.warnings = append(p.warnings, fmt.Sprintf("%d:%d: Semantic Warning: %s", tok.Line, tok.Column, msg))
@@ -98,7 +101,7 @@ func (p *Parser) AllMessages() []string {
 }
 
 // getSymbolInfo checks the current scope (global only for now)
-func (p *Parser) getSymbolInfo(name string) (SymbolInfo, bool) {
+func (p *Parser) getSymbolInfo(name string) (ast.SymbolInfo, bool) {
 	// TODO: Implement scope lookup when nesting is added
 	info, exists := p.symbolTable[name]
 	return info, exists
@@ -106,13 +109,13 @@ func (p *Parser) getSymbolInfo(name string) (SymbolInfo, bool) {
 
 // --- Program Parsing ---
 
-func (p *Parser) ParseProgram() *Program {
-	program := &Program{
-		Statements:  []Statement{},
+func (p *Parser) ParseProgram() *ast.Program {
+	program := &ast.Program{
+		Statements:  []ast.Statement{},
 		SymbolTable: p.symbolTable, // Share the final symbol table
 	}
 
-	for p.curTok.Type != TokenEOF {
+	for p.curTok.Type != token.TokenEOF {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
@@ -122,7 +125,7 @@ func (p *Parser) ParseProgram() *Program {
 			// the problematic token(s) to allow recovery.
 			// We simply continue to the next token if EOF hasn't been reached.
 			// Avoids infinite loops if a parser returns nil without consuming.
-			if p.curTok.Type != TokenEOF {
+			if p.curTok.Type != token.TokenEOF {
 				// As a safeguard, if we are here and didn't parse a statement,
 				// advance the token to prevent potential infinite loops,
 				// though individual parsers *should* handle this.
@@ -137,40 +140,40 @@ func (p *Parser) ParseProgram() *Program {
 
 // --- Statement Parsing ---
 
-func (p *Parser) parseStatement() Statement {
+func (p *Parser) parseStatement() ast.Statement {
 	switch p.curTok.Type {
-	case TokenProc:
+	case token.TokenProc:
 		return p.parseProcDeclarationStatement()
-	case TokenReturn:
+	case token.TokenReturn:
 		return p.parseReturnStatement()
-	case TokenPrint:
+	case token.TokenPrint:
 		return p.parsePrintStatement()
-	case TokenConst:
+	case token.TokenConst:
 		return p.parseDeclarationStatement() // Handles const modifier
-	case TokenIdent:
+	case token.TokenIdent:
 		// Look ahead to determine declaration, reassignment, or proc call
 		switch p.peekTok.Type {
-		case TokenAssignDefine, TokenColon: // x := ... or x : type = ...
+		case token.TokenAssignDefine, token.TokenColon: // x := ... or x : type = ...
 			return p.parseDeclarationStatement()
-		case TokenAssign: // x = ...
+		case token.TokenAssign: // x = ...
 			return p.parseReassignmentStatement()
-		case TokenLParen: // x(...)
+		case token.TokenLParen: // x(...)
 			// Parse as an expression statement, which handles proc calls
 			return p.parseExpressionStatement()
 		default:
 			p.addError(p.peekTok, "Expected ':=', ':', '=', or '(' after identifier '%s', got '%s'", p.curTok.Literal, p.peekTok.Type)
 			p.nextToken() // Consume IDENT
 			// Consume the unexpected token to attempt recovery
-			if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace { // Avoid consuming closing brace
+			if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace { // Avoid consuming closing brace
 				p.nextToken()
 			}
 			return nil
 		}
-	case TokenLBrace: // Block statement cannot occur outside procedures
+	case token.TokenLBrace: // Block statement cannot occur outside procedures
 		p.addError(p.curTok, "Unexpected '{' at the start of a top-level statement")
 		p.skipBlock() // Attempt to skip the block
 		return nil
-	case TokenEOF:
+	case token.TokenEOF:
 		return nil // End of input
 	default:
 		// Could be an expression statement starting with a literal or '('.
@@ -180,13 +183,13 @@ func (p *Parser) parseStatement() Statement {
 			// Check if it was just a literal/identifier without side effect (optional warning)
 			// Example: "hello" or 5 or myVar as a statement
 			// These have no effect in COBOL unless it's a proc call.
-			if _, isLit := stmt.Expression.(*StringLiteral); isLit {
+			if _, isLit := stmt.Expression.(*ast.StringLiteral); isLit {
 				p.addWarning(stmt.Token, "String literal used as statement has no effect.")
-			} else if _, isLit := stmt.Expression.(*IntegerLiteral); isLit {
+			} else if _, isLit := stmt.Expression.(*ast.IntegerLiteral); isLit {
 				p.addWarning(stmt.Token, "Integer literal used as statement has no effect.")
-			} else if _, isIdent := stmt.Expression.(*Identifier); isIdent {
+			} else if _, isIdent := stmt.Expression.(*ast.Identifier); isIdent {
 				// Check if it's a variable identifier, not a proc call handled elsewhere
-				p.addWarning(stmt.Token, "Identifier '%s' used as statement has no effect.", stmt.Expression.(*Identifier).Value)
+				p.addWarning(stmt.Token, "Identifier '%s' used as statement has no effect.", stmt.Expression.(*ast.Identifier).Value)
 			}
 			return stmt
 		}
@@ -197,7 +200,7 @@ func (p *Parser) parseStatement() Statement {
 			p.addError(p.curTok, "Unexpected token at start of statement: %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		}
 		// Consume unexpected token to attempt recovery if it wasn't consumed already
-		if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace {
+		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
 			p.nextToken()
 		}
 		return nil
@@ -205,16 +208,16 @@ func (p *Parser) parseStatement() Statement {
 }
 
 // parseDeclarationStatement parses `[const] name := value` or `[const] name: type[(width)] = value`
-func (p *Parser) parseDeclarationStatement() Statement {
-	stmt := &DeclarationStatement{Token: p.curTok} // Store first token (const or ident)
+func (p *Parser) parseDeclarationStatement() ast.Statement {
+	stmt := &ast.DeclarationStatement{Token: p.curTok} // Store first token (const or ident)
 
 	// 1. Handle optional 'const'
-	if p.curTok.Type == TokenConst {
+	if p.curTok.Type == token.TokenConst {
 		stmt.IsConst = true
 		p.nextToken() // Consume 'const'
-		if p.curTok.Type != TokenIdent {
+		if p.curTok.Type != token.TokenIdent {
 			p.addError(p.curTok, "Expected identifier after 'const', got %s", p.curTok.Type)
-			if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace {
+			if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
 				p.nextToken()
 			} // Consume bad token
 			return nil
@@ -222,20 +225,20 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	}
 
 	// 2. Expect IDENT
-	if p.curTok.Type != TokenIdent {
+	if p.curTok.Type != token.TokenIdent {
 		// This case should only be reached if 'const' wasn't present,
 		// as the 'const' case checks for IDENT above.
 		// However, the entry point to this function also checks for IDENT or CONST.
 		// This path indicates an internal logic error if reached.
 		p.addError(p.curTok, "Internal Parser Error: Expected identifier for declaration start, got %s", p.curTok.Type)
-		if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace {
+		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
 			p.nextToken()
 		} // Consume bad token
 		return nil
 	}
 	identToken := p.curTok
 	varName := identToken.Literal
-	stmt.Name = &Identifier{Token: identToken, Value: varName}
+	stmt.Name = &ast.Identifier{Token: identToken, Value: varName}
 
 	// 3. Check for Redeclaration (in current scope - global only for now)
 	// TODO: Scope awareness needed for parameters/locals vs globals
@@ -246,11 +249,11 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		// Continue parsing to find more errors, but don't add to symbol table later
 	}
 
-	var explicitTypeNode *TypeNode = nil // Store parsed explicit type info
+	var explicitTypeNode *ast.TypeNode = nil // Store parsed explicit type info
 
 	// 4. Check for ':=' (Inferred) or ':' (Explicit) and consume tokens up to '=' or expression start
 	switch p.peekTok.Type {
-	case TokenColon:
+	case token.TokenColon:
 		// --- Explicit Type Path: `name : type[(width)] = value` ---
 		stmt.HasExplicitType = true
 		p.nextToken() // Consume IDENT
@@ -272,9 +275,9 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		stmt.ExplicitWidthToken = typeNode.WidthToken // Store '10' token if present
 
 		// Expect '=' for assignment after explicit type
-		if p.curTok.Type != TokenAssign {
+		if p.curTok.Type != token.TokenAssign {
 			p.addError(p.curTok, "Expected '=' after type specification for '%s', got %s ('%s')", varName, p.curTok.Type, p.curTok.Literal)
-			if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace {
+			if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
 				p.nextToken()
 			} // Consume bad token
 			return nil
@@ -282,7 +285,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 		stmt.Token = p.curTok // Store '=' token
 		p.nextToken()         // Consume '=', curTok is now start of expression
 
-	case TokenAssignDefine:
+	case token.TokenAssignDefine:
 		// --- Inferred Type Path: `name := value` ---
 		stmt.HasExplicitType = false
 		p.nextToken()         // Consume IDENT. curTok is now ':='
@@ -292,7 +295,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 	default:
 		p.addError(p.peekTok, "Expected ':=' or ':' after identifier '%s' in declaration, got '%s'", varName, p.peekTok.Type)
 		p.nextToken() // Consume IDENT
-		if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace {
+		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
 			p.nextToken()
 		} // Consume unexpected peek token
 		return nil
@@ -339,13 +342,13 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 		// Check if literal value fits explicit width (Error, not warning, for literals)
 		if finalType != "unknown" {
-			if litInt, ok := valueExpr.(*IntegerLiteral); ok && finalType == "int" {
+			if litInt, ok := valueExpr.(*ast.IntegerLiteral); ok && finalType == "int" {
 				reqWidth := lib.CalculateWidthForValue(litInt.Value) // Width needed for the literal itself
 				if reqWidth > finalWidth {
 					p.addSemanticError(valueExpr.GetToken(), "Integer literal %s requires width %d, but variable '%s' declared with width %d", litInt.Token.Literal, reqWidth, varName, finalWidth)
 					// Don't change finalWidth, just report error. Emitter might truncate.
 				}
-			} else if litStr, ok := valueExpr.(*StringLiteral); ok && finalType == "string" {
+			} else if litStr, ok := valueExpr.(*ast.StringLiteral); ok && finalType == "string" {
 				reqWidth := len(litStr.Value) // String literal length
 				if reqWidth > finalWidth {
 					p.addSemanticError(valueExpr.GetToken(), "String literal with length %d exceeds declared width %d for variable '%s'", reqWidth, finalWidth, varName)
@@ -386,7 +389,7 @@ func (p *Parser) parseDeclarationStatement() Statement {
 
 	// Add to symbol table ONLY if not a redeclaration AND type is known/valid
 	if !declared && finalType != "unknown" && finalType != "void" {
-		p.symbolTable[varName] = SymbolInfo{
+		p.symbolTable[varName] = ast.SymbolInfo{
 			Type:        finalType,
 			IsConst:     stmt.IsConst,
 			Width:       finalWidth,
@@ -413,21 +416,21 @@ func (p *Parser) parseDeclarationStatement() Statement {
 }
 
 // parseProcDeclarationStatement parses `proc name(params...) : retType { body }`
-func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
+func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 	startTok := p.curTok // Store 'proc' token
-	stmt := &ProcDeclarationStatement{Token: startTok}
+	stmt := &ast.ProcDeclarationStatement{Token: startTok}
 
 	// 1. Parse 'proc' IDENTIFIER
-	if p.curTok.Type != TokenProc { // Should be called when curTok is 'proc'
+	if p.curTok.Type != token.TokenProc { // Should be called when curTok is 'proc'
 		p.addError(p.curTok, "Internal Parser Error: Expected 'proc' to start procedure declaration.")
 		return nil
 	}
-	if !p.expectPeek(TokenIdent) { // Consumes 'proc', checks peek is IDENT. If yes, consumes IDENT.
+	if !p.expectPeek(token.TokenIdent) { // Consumes 'proc', checks peek is IDENT. If yes, consumes IDENT.
 		p.addError(p.peekTok, "Expected procedure name (identifier) after 'proc', got %s", p.peekTok.Type)
 		return nil
 	}
 	// curTok is now the procedure name IDENT
-	stmt.Name = &Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	stmt.Name = &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
 	procName := stmt.Name.Value
 	previousProcName := p.currentProcName // Save context for potential nesting
 	p.currentProcName = procName          // Set context for return statement checks
@@ -440,7 +443,7 @@ func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
 	}
 
 	// 3. Parse Parameter List `(...)`
-	if !p.expectPeek(TokenLParen) { // Consumes IDENT, checks peek is '('. If yes, consumes '('.
+	if !p.expectPeek(token.TokenLParen) { // Consumes IDENT, checks peek is '('. If yes, consumes '('.
 		p.addError(p.peekTok, "Expected '(' after procedure name '%s', got %s", procName, p.peekTok.Type)
 		p.currentProcName = previousProcName
 		return nil
@@ -455,12 +458,12 @@ func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
 	// After parseParameterList returns successfully, curTok MUST be ')'
 
 	// 4. Parse Return Type `: type`
-	if p.curTok.Type != TokenRParen { // Sanity check
+	if p.curTok.Type != token.TokenRParen { // Sanity check
 		p.addError(p.curTok, "Internal Parser Error: Expected ')' after parameter list parsing, got %s", p.curTok.Type)
 		p.currentProcName = previousProcName
 		return nil
 	}
-	if p.peekTok.Type != TokenColon { // Check token AFTER ')'
+	if p.peekTok.Type != token.TokenColon { // Check token AFTER ')'
 		p.addError(p.peekTok, "Expected ':' after '()' for procedure '%s' to specify return type, got %s", procName, p.peekTok.Type)
 		p.currentProcName = previousProcName
 		return nil
@@ -478,7 +481,7 @@ func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
 
 	// 5. --- PRE-ADD Symbol Info (before body parsing) ---
 	// Create SymbolInfo based on the parsed signature
-	info := SymbolInfo{
+	info := ast.SymbolInfo{
 		Type:        "proc",
 		IsConst:     true,
 		Width:       0, // N/A
@@ -510,14 +513,14 @@ func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
 		stmt.Name.ResolvedType = "unknown"
 		// Ensure subsequent lookups inside the body fail cleanly if signature was bad
 		if !exists { // If it wasn't a redeclaration but signature was bad, add dummy entry
-			p.symbolTable[procName] = SymbolInfo{Type: "unknown"}
+			p.symbolTable[procName] = ast.SymbolInfo{Type: "unknown"}
 		}
 		// No need to set validSignature = false here, it's already implied or was set above
 	}
 	// --- End Symbol Info Pre-Add ---
 
 	// 6. Parse Procedure Body `{...}`
-	if p.curTok.Type != TokenLBrace { // Expect '{' after type parsing
+	if p.curTok.Type != token.TokenLBrace { // Expect '{' after type parsing
 		p.addError(p.curTok, "Expected '{' to start procedure body after return type, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		p.currentProcName = previousProcName
 		return nil
@@ -548,10 +551,10 @@ func (p *Parser) parseProcDeclarationStatement() *ProcDeclarationStatement {
 // Returns the TypeNode or nil on error.
 // IMPORTANT: If type is 'int' or 'string' and width is not specified,
 // it assigns the default width to the TypeNode.
-func (p *Parser) parseTypeNode() *TypeNode {
+func (p *Parser) parseTypeNode() *ast.TypeNode {
 	// Expect 'int', 'string', or 'void'
-	isKnownTypeLiteral := p.curTok.Type == TokenTypeLiteral && (p.curTok.Literal == "int" || p.curTok.Literal == "string")
-	isVoidType := p.curTok.Type == TokenVoid
+	isKnownTypeLiteral := p.curTok.Type == token.TokenTypeLiteral && (p.curTok.Literal == "int" || p.curTok.Literal == "string")
+	isVoidType := p.curTok.Type == token.TokenVoid
 
 	if !isKnownTypeLiteral && !isVoidType {
 		p.addError(p.curTok, "Expected type name (int, string, void), got %s ('%s')", p.curTok.Type, p.curTok.Literal)
@@ -563,7 +566,7 @@ func (p *Parser) parseTypeNode() *TypeNode {
 
 	typeTok := p.curTok
 	typeName := typeTok.Literal
-	node := &TypeNode{
+	node := &ast.TypeNode{
 		Token:  typeTok,
 		Name:   typeName,
 		IsVoid: isVoidType,
@@ -572,17 +575,17 @@ func (p *Parser) parseTypeNode() *TypeNode {
 	p.nextToken() // Consume type name token ('int', 'string', 'void')
 
 	// Parse optional width `(INT)` only if not void
-	if !node.IsVoid && p.curTok.Type == TokenLParen {
+	if !node.IsVoid && p.curTok.Type == token.TokenLParen {
 		p.nextToken() // Consume '('
-		if p.curTok.Type != TokenInt {
+		if p.curTok.Type != token.TokenInt {
 			p.addError(p.curTok, "Expected integer width inside parentheses for type '%s', got %s ('%s')", typeName, p.curTok.Type, p.curTok.Literal)
 			// Recovery? Skip until ')'? Difficult. Return nil.
 			// Consume the bad token inside parens if it's not ')'
-			if p.curTok.Type != TokenRParen && p.curTok.Type != TokenEOF {
+			if p.curTok.Type != token.TokenRParen && p.curTok.Type != token.TokenEOF {
 				p.nextToken()
 			}
 			// If we now see ')', consume it.
-			if p.curTok.Type == TokenRParen {
+			if p.curTok.Type == token.TokenRParen {
 				p.nextToken()
 			}
 			return nil
@@ -597,7 +600,7 @@ func (p *Parser) parseTypeNode() *TypeNode {
 		}
 		p.nextToken() // Consume INT
 
-		if p.curTok.Type != TokenRParen {
+		if p.curTok.Type != token.TokenRParen {
 			p.addError(p.curTok, "Expected ')' after width specification, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 			// Don't consume if not ')', let caller handle
 			return nil // Error, stop parsing type node
@@ -626,18 +629,18 @@ func (p *Parser) parseTypeNode() *TypeNode {
 // Expects curTok to be '('. Consumes tokens inside the list.
 // Leaves curTok on the closing ')'.
 // Returns list of Parameter nodes, list of param names, and error.
-func (p *Parser) parseParameterList() ([]*Parameter, []string, error) {
-	params := []*Parameter{}
+func (p *Parser) parseParameterList() ([]*ast.Parameter, []string, error) {
+	params := []*ast.Parameter{}
 	paramNames := []string{}
 	paramNameSet := make(map[string]bool) // For checking duplicate names
 
-	if p.curTok.Type != TokenLParen { // Should be called only when curTok is '('
+	if p.curTok.Type != token.TokenLParen { // Should be called only when curTok is '('
 		p.addError(p.curTok, "Internal Parser Error: Expected '(' to start parameter list, got %s", p.curTok.Type)
 		return nil, nil, fmt.Errorf("internal error: missing '('")
 	}
 
 	// Check for empty list: ()
-	if p.peekTok.Type == TokenRParen {
+	if p.peekTok.Type == token.TokenRParen {
 		p.nextToken()                  // Consume '('
 		return params, paramNames, nil // Return empty lists, success
 	}
@@ -661,12 +664,12 @@ func (p *Parser) parseParameterList() ([]*Parameter, []string, error) {
 	// parseSingleParameter consumes tokens up to token after type spec
 
 	// Parse subsequent parameters (separated by comma)
-	for p.curTok.Type == TokenComma {
+	for p.curTok.Type == token.TokenComma {
 
 		p.nextToken() // Consume ','
 
 		// Handle trailing comma case: `(a: int(1), )`
-		if p.curTok.Type == TokenRParen {
+		if p.curTok.Type == token.TokenRParen {
 			p.addError(p.curTok, "Unexpected ')' after comma in parameter list")
 			return nil, nil, fmt.Errorf("unexpected ')' after comma")
 		}
@@ -685,7 +688,7 @@ func (p *Parser) parseParameterList() ([]*Parameter, []string, error) {
 	}
 
 	// Expect ')' - DO NOT CONSUME IT HERE
-	if p.curTok.Type != TokenRParen {
+	if p.curTok.Type != token.TokenRParen {
 		p.addError(p.curTok, "Expected ',' or ')' after parameter, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Recovery? Skip until ')'? For now, return error.
 		return nil, nil, fmt.Errorf("syntax error in parameter list")
@@ -696,17 +699,17 @@ func (p *Parser) parseParameterList() ([]*Parameter, []string, error) {
 
 // parseSingleParameter parses `ident: type(width)` - width is MANDATORY here.
 // Expects curTok to be the identifier. Consumes up to token after type spec.
-func (p *Parser) parseSingleParameter() (*Parameter, error) {
-	if p.curTok.Type != TokenIdent {
+func (p *Parser) parseSingleParameter() (*ast.Parameter, error) {
+	if p.curTok.Type != token.TokenIdent {
 		p.addError(p.curTok, "Expected parameter name (identifier), got %s ('%s')", p.curTok.Type, p.curTok.Literal)
-		if p.curTok.Type != TokenEOF && p.curTok.Type != TokenColon && p.curTok.Type != TokenRParen {
+		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenColon && p.curTok.Type != token.TokenRParen {
 			p.nextToken()
 		} // Consume bad token
 		return nil, fmt.Errorf("expected parameter name")
 	}
-	ident := &Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	ident := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
 
-	if !p.expectPeek(TokenColon) {
+	if !p.expectPeek(token.TokenColon) {
 		p.addError(p.peekTok, "Expected ':' after parameter name '%s'", ident.Value)
 		return nil, fmt.Errorf("expected ':' after parameter name")
 	}
@@ -729,7 +732,7 @@ func (p *Parser) parseSingleParameter() (*Parameter, error) {
 	// It does NOT assign default width for parameters.
 	if typeNode.Width <= 0 { // Check if a valid positive width was parsed
 		// WidthToken check is more precise if parseTypeNode preserves it correctly
-		widthMissing := typeNode.WidthToken.Type != TokenInt
+		widthMissing := typeNode.WidthToken.Type != token.TokenInt
 		if widthMissing {
 			p.addError(typeNode.Token, "Explicit width specification (e.g., 'int(10)', 'string(30)') is required for parameter '%s'", ident.Value)
 		} else {
@@ -749,22 +752,22 @@ func (p *Parser) parseSingleParameter() (*Parameter, error) {
 
 	// TODO: Add parameter to current scope's symbol table when scopes are implemented
 
-	return &Parameter{Name: ident, TypeNode: typeNode}, nil
+	return &ast.Parameter{Name: ident, TypeNode: typeNode}, nil
 }
 
 // parseBlockStatement parses `{ statements... }`
-func (p *Parser) parseBlockStatement() *BlockStatement {
-	block := &BlockStatement{Token: p.curTok} // Store '{' token
-	block.Statements = []Statement{}
+func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	block := &ast.BlockStatement{Token: p.curTok} // Store '{' token
+	block.Statements = []ast.Statement{}
 
 	// Expect curTok to be LBrace
-	if p.curTok.Type != TokenLBrace {
+	if p.curTok.Type != token.TokenLBrace {
 		p.addError(p.curTok, "Internal Parser Error: Expected '{' to start block, got %s", p.curTok.Type)
 		return nil
 	}
 	p.nextToken() // Consume '{'
 
-	for p.curTok.Type != TokenRBrace && p.curTok.Type != TokenEOF {
+	for p.curTok.Type != token.TokenRBrace && p.curTok.Type != token.TokenEOF {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			block.Statements = append(block.Statements, stmt)
@@ -773,14 +776,14 @@ func (p *Parser) parseBlockStatement() *BlockStatement {
 			// the problematic token. If it was EOF, the loop condition handles it.
 			// If it was some other reason, we might loop infinitely.
 			// Safeguard: if errors occurred and we haven't reached the end or }, advance.
-			if len(p.errors) > 0 && p.curTok.Type != TokenRBrace && p.curTok.Type != TokenEOF {
+			if len(p.errors) > 0 && p.curTok.Type != token.TokenRBrace && p.curTok.Type != token.TokenEOF {
 				// fmt.Printf("DEBUG: Advancing token after failed statement parse in block: %v\n", p.curTok)
 				// p.nextToken() // Use cautiously
 			}
 		}
 	}
 
-	if p.curTok.Type != TokenRBrace {
+	if p.curTok.Type != token.TokenRBrace {
 		// If EOF was reached before '}', add error
 		p.addError(p.curTok, "Expected '}' to close block, found %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Attempt to find '}' for recovery? Difficult. Return nil for now.
@@ -795,16 +798,16 @@ func (p *Parser) parseBlockStatement() *BlockStatement {
 // skipBlock attempts recovery by consuming tokens until a matching '}'
 func (p *Parser) skipBlock() {
 	openCount := 1 // Assume '{' was the current token
-	if p.curTok.Type != TokenLBrace {
+	if p.curTok.Type != token.TokenLBrace {
 		return
 	} // Should not happen if called correctly
 	p.nextToken() // Consume the initial '{'
 
-	for openCount > 0 && p.curTok.Type != TokenEOF {
+	for openCount > 0 && p.curTok.Type != token.TokenEOF {
 		switch p.curTok.Type {
-		case TokenLBrace:
+		case token.TokenLBrace:
 			openCount++
-		case TokenRBrace:
+		case token.TokenRBrace:
 			openCount--
 		}
 		if openCount == 0 { // Found matching brace
@@ -817,8 +820,8 @@ func (p *Parser) skipBlock() {
 }
 
 // parseReturnStatement parses `return [expression]`
-func (p *Parser) parseReturnStatement() Statement {
-	stmt := &ReturnStatement{Token: p.curTok}
+func (p *Parser) parseReturnStatement() ast.Statement {
+	stmt := &ast.ReturnStatement{Token: p.curTok}
 	returnTok := p.curTok // Keep the 'return' token for error reporting location
 	p.nextToken()         // Consume 'return'
 
@@ -838,7 +841,7 @@ func (p *Parser) parseReturnStatement() Statement {
 	procInfo, ok := p.getSymbolInfo(p.currentProcName)
 	if !ok { // Should not happen if currentProcName is set correctly
 		p.addError(returnTok, "Internal Parser Error: Could not find symbol info for current procedure '%s'", p.currentProcName)
-		procInfo = SymbolInfo{ReturnType: "unknown"} // Fallback for checks, treat as error state
+		procInfo = ast.SymbolInfo{ReturnType: "unknown"} // Fallback for checks, treat as error state
 	}
 
 	// --- Parse Return Value (or check for none if void) ---
@@ -866,7 +869,7 @@ func (p *Parser) parseReturnStatement() Statement {
 		// Non-void function: MUST have a return value
 		if !hasPotentialValue {
 			// Check if it's immediately followed by '}' or EOF
-			if p.curTok.Type == TokenRBrace || p.curTok.Type == TokenEOF {
+			if p.curTok.Type == token.TokenRBrace || p.curTok.Type == token.TokenEOF {
 				p.addError(returnTok, "Expected expression after 'return' for non-void procedure '%s'", p.currentProcName)
 			} else {
 				// Some other token followed return, but not an expression start
@@ -901,10 +904,10 @@ func (p *Parser) parseReturnStatement() Statement {
 
 			// Check if the returned value is a literal
 			isLiteralReturn := false
-			if _, ok := returnValue.(*IntegerLiteral); ok {
+			if _, ok := returnValue.(*ast.IntegerLiteral); ok {
 				isLiteralReturn = true
 			}
-			if _, ok := returnValue.(*StringLiteral); ok {
+			if _, ok := returnValue.(*ast.StringLiteral); ok {
 				isLiteralReturn = true
 			}
 
@@ -927,9 +930,9 @@ func (p *Parser) parseReturnStatement() Statement {
 }
 
 // isExpressionStart checks if a token can potentially start an expression.
-func (p *Parser) isExpressionStart(tok Token) bool {
+func (p *Parser) isExpressionStart(tok token.Token) bool {
 	switch tok.Type {
-	case TokenInt, TokenString, TokenIdent, TokenLParen, TokenMinus, TokenPlus: // Add others if needed (unary ops?)
+	case token.TokenInt, token.TokenString, token.TokenIdent, token.TokenLParen, token.TokenMinus, token.TokenPlus: // Add others if needed (unary ops?)
 		return true
 	default:
 		return false
@@ -939,20 +942,20 @@ func (p *Parser) isExpressionStart(tok Token) bool {
 // skipExpressionTokens tries to consume tokens that likely form an expression.
 // Basic recovery for syntax errors. Stops at potential statement terminators.
 func (p *Parser) skipExpressionTokens() {
-	for !p.isStatementEnd(p.curTok) && p.curTok.Type != TokenEOF {
+	for !p.isStatementEnd(p.curTok) && p.curTok.Type != token.TokenEOF {
 		// TODO: Handle nested parentheses/braces correctly if needed
 		p.nextToken()
 	}
 }
 
 // isStatementEnd checks for tokens that typically end a simple statement (in Grace's case, context-dependent)
-func (p *Parser) isStatementEnd(tok Token) bool {
+func (p *Parser) isStatementEnd(tok token.Token) bool {
 	// Newlines are handled implicitly by the main parsing loop.
 	// RBrace usually ends a block/statement within it.
 	// EOF ends the program.
 	// Specific keywords might end expressions (e.g., 'proc', 'const' starting next line).
 	switch tok.Type {
-	case TokenRBrace, TokenEOF, TokenProc, TokenConst, TokenReturn, TokenPrint:
+	case token.TokenRBrace, token.TokenEOF, token.TokenProc, token.TokenConst, token.TokenReturn, token.TokenPrint:
 		return true
 	default:
 		return false
@@ -960,9 +963,9 @@ func (p *Parser) isStatementEnd(tok Token) bool {
 }
 
 // parseExpressionStatement handles statements that are just expressions (like proc calls)
-func (p *Parser) parseExpressionStatement() *ExpressionStatement {
+func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
 	startTok := p.curTok
-	stmt := &ExpressionStatement{Token: startTok}
+	stmt := &ast.ExpressionStatement{Token: startTok}
 
 	expr := p.parseExpression(PrecLowest)
 	if expr == nil {
@@ -973,16 +976,16 @@ func (p *Parser) parseExpressionStatement() *ExpressionStatement {
 
 	// --- Semantic Check: Allow ignoring non-void results? ---
 	// Current decision: Yes, allow ignoring results (like C, Go). Add optional warning.
-	if call, ok := stmt.Expression.(*ProcCallExpression); ok {
+	if call, ok := stmt.Expression.(*ast.ProcCallExpression); ok {
 		// Check the *resolved* return type from the call expression node
 		if call.ResultType() != "void" {
 			p.addWarning(stmt.Token, "Result of non-void procedure call '%s' is ignored.", call.Function.Value)
 		}
-	} else if _, ok := stmt.Expression.(*IntegerLiteral); ok {
+	} else if _, ok := stmt.Expression.(*ast.IntegerLiteral); ok {
 		p.addWarning(stmt.Token, "Integer literal used as statement has no effect.")
-	} else if _, ok := stmt.Expression.(*StringLiteral); ok {
+	} else if _, ok := stmt.Expression.(*ast.StringLiteral); ok {
 		p.addWarning(stmt.Token, "String literal used as statement has no effect.")
-	} else if ident, isIdent := stmt.Expression.(*Identifier); isIdent {
+	} else if ident, isIdent := stmt.Expression.(*ast.Identifier); isIdent {
 		// Check if it's a variable identifier (proc identifiers shouldn't reach here standalone)
 		if ident.ResolvedType != "proc" && ident.ResolvedType != "unknown" {
 			p.addWarning(stmt.Token, "Variable '%s' used as statement has no effect.", ident.Value)
@@ -994,20 +997,20 @@ func (p *Parser) parseExpressionStatement() *ExpressionStatement {
 }
 
 // parseReassignmentStatement parses `name = value`
-func (p *Parser) parseReassignmentStatement() Statement {
-	stmt := &ReassignmentStatement{}
+func (p *Parser) parseReassignmentStatement() ast.Statement {
+	stmt := &ast.ReassignmentStatement{}
 
 	// Current token is IDENT
-	if p.curTok.Type != TokenIdent {
+	if p.curTok.Type != token.TokenIdent {
 		// Should not happen based on call site logic
 		p.addError(p.curTok, "Internal Parser Error: Expected identifier for reassignment start, got %s", p.curTok.Type)
-		if p.curTok.Type != TokenEOF && p.curTok.Type != TokenRBrace {
+		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
 			p.nextToken()
 		}
 		return nil
 	}
 	identToken := p.curTok
-	stmt.Name = &Identifier{Token: identToken, Value: p.curTok.Literal}
+	stmt.Name = &ast.Identifier{Token: identToken, Value: p.curTok.Literal}
 	varName := stmt.Name.Value
 
 	// Semantic Check 1 & 2: Is declared? Is const?
@@ -1039,7 +1042,7 @@ func (p *Parser) parseReassignmentStatement() Statement {
 
 	// Expect '='
 	// Use expectPeek for clarity and correct token consumption
-	if !p.expectPeek(TokenAssign) {
+	if !p.expectPeek(token.TokenAssign) {
 		// Error added by expectPeek
 		return nil
 	}
@@ -1071,10 +1074,10 @@ func (p *Parser) parseReassignmentStatement() Statement {
 		if valueType != "unknown" && targetType != "unknown" && valueType == targetType && valueWidth > 0 && declaredWidth > 0 && valueWidth > declaredWidth {
 			// Check if the RHS is a literal - if so, this is an error, not a warning
 			isLiteralRHS := false
-			if _, ok := valueExpr.(*IntegerLiteral); ok {
+			if _, ok := valueExpr.(*ast.IntegerLiteral); ok {
 				isLiteralRHS = true
 			}
-			if _, ok := valueExpr.(*StringLiteral); ok {
+			if _, ok := valueExpr.(*ast.StringLiteral); ok {
 				isLiteralRHS = true
 			}
 
@@ -1093,11 +1096,11 @@ func (p *Parser) parseReassignmentStatement() Statement {
 }
 
 // parsePrintStatement parses `print(expression)`
-func (p *Parser) parsePrintStatement() Statement {
-	stmt := &PrintStatement{Token: p.curTok} // Store PRINT token
+func (p *Parser) parsePrintStatement() ast.Statement {
+	stmt := &ast.PrintStatement{Token: p.curTok} // Store PRINT token
 
 	// Expect '('
-	if !p.expectPeek(TokenLParen) {
+	if !p.expectPeek(token.TokenLParen) {
 		// Error added by expectPeek
 		return nil
 	}
@@ -1109,7 +1112,7 @@ func (p *Parser) parsePrintStatement() Statement {
 	valueExpr := p.parseExpression(PrecLowest)
 	if valueExpr == nil {
 		// Error handled in parseExpression. Check if we need ')'.
-		if p.curTok.Type == TokenRParen {
+		if p.curTok.Type == token.TokenRParen {
 			p.nextToken()
 		} // Consume ')' if found for recovery
 		return nil
@@ -1129,7 +1132,7 @@ func (p *Parser) parsePrintStatement() Statement {
 	}
 
 	// Expect ')'
-	if p.curTok.Type != TokenRParen {
+	if p.curTok.Type != token.TokenRParen {
 		p.addError(p.curTok, "Expected ')' after print expression, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Attempt recovery? If we see a token that could start next statement, maybe return stmt? Risky.
 		// Don't consume if not ')', let the outer loop handle the unexpected token.
@@ -1144,27 +1147,27 @@ func (p *Parser) parsePrintStatement() Statement {
 
 // Type definitions for Pratt parsing functions
 type (
-	prefixParseFn func() Expression           // NUD (Null Denotation)
-	infixParseFn  func(Expression) Expression // LED (Left Denotation)
+	prefixParseFn func() ast.Expression               // NUD (Null Denotation)
+	infixParseFn  func(ast.Expression) ast.Expression // LED (Left Denotation)
 )
 
 var (
-	prefixParseFns map[TokenType]prefixParseFn
-	infixParseFns  map[TokenType]infixParseFn
+	prefixParseFns map[token.TokenType]prefixParseFn
+	infixParseFns  map[token.TokenType]infixParseFn
 )
 
 // registerPrefix associates a token type with its prefix parsing function.
-func (p *Parser) registerPrefix(tokenType TokenType, fn prefixParseFn) {
+func (p *Parser) registerPrefix(tokenType token.TokenType, fn prefixParseFn) {
 	if prefixParseFns == nil {
-		prefixParseFns = make(map[TokenType]prefixParseFn)
+		prefixParseFns = make(map[token.TokenType]prefixParseFn)
 	}
 	prefixParseFns[tokenType] = fn
 }
 
 // registerInfix associates a token type with its infix parsing function.
-func (p *Parser) registerInfix(tokenType TokenType, fn infixParseFn) {
+func (p *Parser) registerInfix(tokenType token.TokenType, fn infixParseFn) {
 	if infixParseFns == nil {
-		infixParseFns = make(map[TokenType]infixParseFn)
+		infixParseFns = make(map[token.TokenType]infixParseFn)
 	}
 	infixParseFns[tokenType] = fn
 }
@@ -1172,23 +1175,23 @@ func (p *Parser) registerInfix(tokenType TokenType, fn infixParseFn) {
 // Initialize Pratt parser functions (call this in NewParser or lazily)
 func (p *Parser) initializePratt() {
 	// Prefixes (NUDs)
-	p.registerPrefix(TokenIdent, p.parseIdentifier)
-	p.registerPrefix(TokenInt, p.parseIntegerLiteral)
-	p.registerPrefix(TokenString, p.parseStringLiteral)
-	p.registerPrefix(TokenLParen, p.parseGroupedExpression)
+	p.registerPrefix(token.TokenIdent, p.parseIdentifier)
+	p.registerPrefix(token.TokenInt, p.parseIntegerLiteral)
+	p.registerPrefix(token.TokenString, p.parseStringLiteral)
+	p.registerPrefix(token.TokenLParen, p.parseGroupedExpression)
 	// p.registerPrefix(TokenMinus, p.parsePrefixExpression) // Example for unary minus
 	// p.registerPrefix(TokenPlus, p.parsePrefixExpression) // Example for unary plus
 
 	// Infixes (LEDs)
-	p.registerInfix(TokenPlus, p.parseInfixExpression)
-	p.registerInfix(TokenMinus, p.parseInfixExpression)
-	p.registerInfix(TokenAsterisk, p.parseInfixExpression)
-	p.registerInfix(TokenSlash, p.parseInfixExpression)
-	p.registerInfix(TokenLParen, p.parseProcCallExpression) // For func(...) style calls
+	p.registerInfix(token.TokenPlus, p.parseInfixExpression)
+	p.registerInfix(token.TokenMinus, p.parseInfixExpression)
+	p.registerInfix(token.TokenAsterisk, p.parseInfixExpression)
+	p.registerInfix(token.TokenSlash, p.parseInfixExpression)
+	p.registerInfix(token.TokenLParen, p.parseProcCallExpression) // For func(...) style calls
 }
 
 // parseExpression is the main entry point for Pratt parsing.
-func (p *Parser) parseExpression(precedence int) Expression {
+func (p *Parser) parseExpression(precedence int) ast.Expression {
 	// Ensure Pratt functions are registered
 	if prefixParseFns == nil {
 		p.initializePratt()
@@ -1221,7 +1224,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 
 // --- Pratt NUD/Prefix Functions ---
 
-func (p *Parser) parseIntegerLiteral() Expression {
+func (p *Parser) parseIntegerLiteral() ast.Expression {
 	token := p.curTok
 	val, err := strconv.ParseInt(token.Literal, 10, 64) // Use 64-bit intermediate parsing
 	if err != nil {
@@ -1231,7 +1234,7 @@ func (p *Parser) parseIntegerLiteral() Expression {
 	}
 	// TODO: Check if val exceeds COBOL limits if necessary (e.g., 18 digits)
 
-	lit := &IntegerLiteral{
+	lit := &ast.IntegerLiteral{
 		Token: token,
 		Value: int(val), // Store as standard Go int
 		Width: lib.CalculateWidthForValue(int(val)),
@@ -1240,9 +1243,9 @@ func (p *Parser) parseIntegerLiteral() Expression {
 	return lit
 }
 
-func (p *Parser) parseStringLiteral() Expression {
+func (p *Parser) parseStringLiteral() ast.Expression {
 	token := p.curTok
-	expr := &StringLiteral{
+	expr := &ast.StringLiteral{
 		Token: token,
 		Value: token.Literal, // Literal value already extracted by lexer
 		Width: len(token.Literal),
@@ -1251,13 +1254,13 @@ func (p *Parser) parseStringLiteral() Expression {
 	return expr
 }
 
-func (p *Parser) parseIdentifier() Expression {
+func (p *Parser) parseIdentifier() ast.Expression {
 	// This is called when an identifier appears where a value is expected (prefix context)
 	token := p.curTok
 	varName := token.Literal
 	// TODO: Scope lookup
 	symbolInfo, declared := p.getSymbolInfo(varName)
-	expr := &Identifier{Token: token, Value: varName}
+	expr := &ast.Identifier{Token: token, Value: varName}
 
 	if !declared {
 		p.addSemanticError(token, "Identifier '%s' used before declaration", varName)
@@ -1272,7 +1275,7 @@ func (p *Parser) parseIdentifier() Expression {
 	return expr
 }
 
-func (p *Parser) parseGroupedExpression() Expression {
+func (p *Parser) parseGroupedExpression() ast.Expression {
 	startToken := p.curTok // Store '('
 	p.nextToken()          // Consume '('
 
@@ -1280,15 +1283,15 @@ func (p *Parser) parseGroupedExpression() Expression {
 	expr := p.parseExpression(PrecLowest)
 	if expr == nil {
 		// Error already reported by parseExpression. Attempt recovery.
-		p.skipUntil(TokenRParen) // Skip until ')'
-		if p.curTok.Type == TokenRParen {
+		p.skipUntil(token.TokenRParen) // Skip until ')'
+		if p.curTok.Type == token.TokenRParen {
 			p.nextToken()
 		} // Consume ')' if found
 		return nil
 	}
 
 	// Expect ')'
-	if p.curTok.Type != TokenRParen {
+	if p.curTok.Type != token.TokenRParen {
 		p.addError(p.curTok, "Expected ')' after expression in parentheses, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		// Don't consume if not ')', let outer parsers handle recovery
 		return nil
@@ -1298,12 +1301,12 @@ func (p *Parser) parseGroupedExpression() Expression {
 	// Wrap in GroupedExpression node OR return inner expr directly.
 	// Wrapping helps if we need to distinguish (a+b) from a+b later.
 	// return expr // Simpler if grouping is only for precedence
-	return &GroupedExpression{Token: startToken, Expression: expr} // Keep structure
+	return &ast.GroupedExpression{Token: startToken, Expression: expr} // Keep structure
 }
 
 // --- Pratt LED/Infix Functions ---
 
-func (p *Parser) parseInfixExpression(left Expression) Expression {
+func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	// This function handles binary operators like +, -, *, /
 	opToken := p.curTok // The binary operator token
 	operator := opToken.Literal
@@ -1350,7 +1353,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 		}
 		// Result type remains unknown
 	} else if operator == "/" { // Specific check for division by zero literal
-		if lit, ok := right.(*IntegerLiteral); ok && lit.Value == 0 {
+		if lit, ok := right.(*ast.IntegerLiteral); ok && lit.Value == 0 {
 			p.addSemanticError(opToken, "Division by literal zero")
 			// Result type remains int, but operation is problematic. Width calculation might default.
 		}
@@ -1364,7 +1367,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 	}
 
 	// No folding, build the BinaryExpression node
-	expr := &BinaryExpression{
+	expr := &ast.BinaryExpression{
 		Token:    opToken,
 		Left:     left,
 		Operator: operator,
@@ -1375,9 +1378,9 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 }
 
 // parseProcCallExpression (as LED/Infix for Pratt) handles `identifier(...)`
-func (p *Parser) parseProcCallExpression(function Expression) Expression {
+func (p *Parser) parseProcCallExpression(function ast.Expression) ast.Expression {
 	// 'function' is the expression parsed just before the '('. It should be an Identifier.
-	ident, ok := function.(*Identifier)
+	ident, ok := function.(*ast.Identifier)
 	if !ok {
 		p.addError(p.curTok, "Expected identifier before '(' for procedure call, got %T", function)
 		p.skipParentheses() // Attempt recovery
@@ -1401,7 +1404,7 @@ func (p *Parser) parseProcCallExpression(function Expression) Expression {
 		return nil
 	}
 
-	expr := &ProcCallExpression{
+	expr := &ast.ProcCallExpression{
 		Token:    callToken, // Use '(' as the call token? Or ident? Let's use ident.
 		Function: ident,     // Use the identifier node parsed as the left expression
 		// Set resolved return type/width from symbol table info
@@ -1413,8 +1416,8 @@ func (p *Parser) parseProcCallExpression(function Expression) Expression {
 	// Parse Arguments using helper
 	var err error
 	// parseExpressionList expects curTok *after* '(', so advance first
-	p.nextToken()                                            // Consume '('
-	expr.Arguments, err = p.parseExpressionList(TokenRParen) // Parses until ')'
+	p.nextToken()                                                  // Consume '('
+	expr.Arguments, err = p.parseExpressionList(token.TokenRParen) // Parses until ')'
 	if err != nil {
 		return nil // Error handled in parseExpressionList
 	}
@@ -1446,10 +1449,10 @@ func (p *Parser) parseProcCallExpression(function Expression) Expression {
 			if argType != "unknown" && argType != "void" && argType == expectedType && argWidth > 0 && expectedWidth > 0 && argWidth > expectedWidth {
 				// Is argument a literal? If so, it's likely an error.
 				isLiteralArg := false
-				if _, ok := argExpr.(*IntegerLiteral); ok {
+				if _, ok := argExpr.(*ast.IntegerLiteral); ok {
 					isLiteralArg = true
 				}
-				if _, ok := argExpr.(*StringLiteral); ok {
+				if _, ok := argExpr.(*ast.StringLiteral); ok {
 					isLiteralArg = true
 				}
 
@@ -1473,11 +1476,11 @@ func (p *Parser) parseProcCallExpression(function Expression) Expression {
 
 // tryConstantFolding attempts to fold binary operations on literals.
 // Returns the folded literal expression (IntegerLiteral or StringLiteral) or nil if folding is not possible.
-func (p *Parser) tryConstantFolding(left, right Expression, opToken Token) Expression {
-	leftLitInt, leftIsInt := left.(*IntegerLiteral)
-	rightLitInt, rightIsInt := right.(*IntegerLiteral)
-	leftLitStr, leftIsStr := left.(*StringLiteral)
-	rightLitStr, rightIsStr := right.(*StringLiteral)
+func (p *Parser) tryConstantFolding(left, right ast.Expression, opToken token.Token) ast.Expression {
+	leftLitInt, leftIsInt := left.(*ast.IntegerLiteral)
+	rightLitInt, rightIsInt := right.(*ast.IntegerLiteral)
+	leftLitStr, leftIsStr := left.(*ast.StringLiteral)
+	rightLitStr, rightIsStr := right.(*ast.StringLiteral)
 	operator := opToken.Literal
 
 	// Integer Folding (+, -, *, /)
@@ -1503,7 +1506,7 @@ func (p *Parser) tryConstantFolding(left, right Expression, opToken Token) Expre
 			calculated = false // Unknown operator for int folding
 		}
 		if calculated {
-			return &IntegerLiteral{
+			return &ast.IntegerLiteral{
 				Token: opToken, // Use operator token for location info of the folded result
 				Value: resultVal,
 				Width: lib.CalculateWidthForValue(resultVal), // Calculate exact width
@@ -1514,7 +1517,7 @@ func (p *Parser) tryConstantFolding(left, right Expression, opToken Token) Expre
 	// String Folding (only for '+')
 	if leftIsStr && rightIsStr && operator == "+" {
 		resultVal := leftLitStr.Value + rightLitStr.Value
-		return &StringLiteral{
+		return &ast.StringLiteral{
 			Token: opToken, // Use operator token for location
 			Value: resultVal,
 			Width: len(resultVal), // Exact width
@@ -1529,11 +1532,11 @@ func (p *Parser) tryConstantFolding(left, right Expression, opToken Token) Expre
 func (p *Parser) skipParentheses() {
 	openCount := 1 // We are inside the parentheses
 
-	for openCount > 0 && p.curTok.Type != TokenEOF {
+	for openCount > 0 && p.curTok.Type != token.TokenEOF {
 		switch p.curTok.Type {
-		case TokenLParen:
+		case token.TokenLParen:
 			openCount++
-		case TokenRParen:
+		case token.TokenRParen:
 			openCount--
 		}
 		if openCount == 0 { // Found matching brace
@@ -1546,8 +1549,8 @@ func (p *Parser) skipParentheses() {
 }
 
 // skipUntil advances tokens until a specific token type is found or EOF. Consumes the target token.
-func (p *Parser) skipUntil(target TokenType) {
-	for p.curTok.Type != target && p.curTok.Type != TokenEOF {
+func (p *Parser) skipUntil(target token.TokenType) {
+	for p.curTok.Type != target && p.curTok.Type != token.TokenEOF {
 		p.nextToken()
 	}
 	// Consume the target token if found
@@ -1559,8 +1562,8 @@ func (p *Parser) skipUntil(target TokenType) {
 // parseExpressionList parses a comma-separated list of expressions until endToken is found.
 // Expects curTok to be the token *after* the opening delimiter (e.g., after '(').
 // Consumes tokens up to and including the endToken. Used for arguments.
-func (p *Parser) parseExpressionList(endToken TokenType) ([]Expression, error) {
-	list := []Expression{}
+func (p *Parser) parseExpressionList(endToken token.TokenType) ([]ast.Expression, error) {
+	list := []ast.Expression{}
 
 	// Check for empty list (e.g., func())
 	if p.curTok.Type == endToken {
@@ -1585,7 +1588,7 @@ func (p *Parser) parseExpressionList(endToken TokenType) ([]Expression, error) {
 	list = append(list, expr)
 
 	// Parse subsequent expressions separated by commas
-	for p.curTok.Type == TokenComma {
+	for p.curTok.Type == token.TokenComma {
 		p.nextToken() // Consume ','
 
 		// Handle trailing comma case: `func(a, )` - invalid
@@ -1624,8 +1627,8 @@ func (p *Parser) parseExpressionList(endToken TokenType) ([]Expression, error) {
 }
 
 // skipUntilCommaOrEnd advances tokens until comma, endToken, or EOF.
-func (p *Parser) skipUntilCommaOrEnd(endToken TokenType) {
-	for p.curTok.Type != TokenComma && p.curTok.Type != endToken && p.curTok.Type != TokenEOF {
+func (p *Parser) skipUntilCommaOrEnd(endToken token.TokenType) {
+	for p.curTok.Type != token.TokenComma && p.curTok.Type != endToken && p.curTok.Type != token.TokenEOF {
 		// TODO: Need smarter skipping for nested structures if expressions get complex
 		p.nextToken()
 	}
@@ -1636,7 +1639,7 @@ func (p *Parser) skipUntilCommaOrEnd(endToken TokenType) {
 // expectPeek checks if the next token is of the expected type. If so, it consumes
 // the current token (advances p.curTok) and returns true. Otherwise, adds an error
 // and returns false.
-func (p *Parser) expectPeek(expectedType TokenType) bool {
+func (p *Parser) expectPeek(expectedType token.TokenType) bool {
 	if p.peekTok.Type == expectedType {
 		p.nextToken() // Consume current, advance peek to current
 		return true
@@ -1646,7 +1649,7 @@ func (p *Parser) expectPeek(expectedType TokenType) bool {
 }
 
 // peekError adds an error message indicating the expected vs actual peek token.
-func (p *Parser) peekError(expectedType TokenType) {
+func (p *Parser) peekError(expectedType token.TokenType) {
 	msg := fmt.Sprintf("Expected next token to be %s, got %s ('%s') instead",
 		expectedType, p.peekTok.Type, p.peekTok.Literal)
 	// Report error at the location of the *peek* token, as that's where the expectation failed

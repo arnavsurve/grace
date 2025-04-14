@@ -1,10 +1,11 @@
-package compiler
+package emitter
 
 import (
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/arnavsurve/grace/internal/compiler/ast"
 	"github.com/arnavsurve/grace/internal/compiler/lib"
 )
 
@@ -42,15 +43,15 @@ type Emitter struct {
 	needsTempString bool
 	needsReturnInt  bool
 	needsReturnStr  bool
-	declaredVars    map[string]bool       // Tracks COBOL var names declared in WORKING-STORAGE
-	procInfo        map[string]SymbolInfo // Cache of all symbol info from parser
+	declaredVars    map[string]bool           // Tracks COBOL var names declared in WORKING-STORAGE
+	procInfo        map[string]ast.SymbolInfo // Cache of all symbol info from parser
 }
 
 func NewEmitter() *Emitter {
 	return &Emitter{
 		errors:       []string{},
 		declaredVars: make(map[string]bool),
-		procInfo:     make(map[string]SymbolInfo),
+		procInfo:     make(map[string]ast.SymbolInfo),
 	}
 }
 
@@ -112,9 +113,7 @@ func (e *Emitter) emitB(line string) {
 				// --- Multi-line handling for DISPLAY (if entire stmt doesn't fit) ---
 				// Calculate how much of the literal can fit on the *first* line
 				maxFirstChunkLen := cobolLineEndCol - (len(areaBIndent) + len("DISPLAY ") + 2) // "literal"
-				if maxFirstChunkLen < 0 {
-					maxFirstChunkLen = 0
-				} // Safety
+				maxFirstChunkLen = max(maxFirstChunkLen, 0)
 
 				firstChunk := literalContent
 				if len(firstChunk) > maxFirstChunkLen {
@@ -127,9 +126,7 @@ func (e *Emitter) emitB(line string) {
 
 				// Max length for subsequent chunks
 				maxLenContinue := cobolLineEndCol - len(continuationPrefix) - 2 // -"literal"
-				if maxLenContinue < 0 {
-					maxLenContinue = 0
-				} // Safety
+				maxLenContinue = max(maxLenContinue, 0)
 
 				for len(remaining) > 0 {
 					chunkLen := maxLenContinue
@@ -200,9 +197,7 @@ func (e *Emitter) emitB(line string) {
 
 			// Calculate max length for the string literal chunk on the *first* MOVE line
 			maxLenFirstLineLiteral := cobolLineEndCol - (len(areaBIndent) + len("MOVE ") + 2) // "literal"
-			if maxLenFirstLineLiteral < 0 {
-				maxLenFirstLineLiteral = 0
-			}
+			maxLenFirstLineLiteral = max(maxLenFirstLineLiteral, 0)
 
 			firstChunk := literalContent
 			if len(firstChunk) > maxLenFirstLineLiteral {
@@ -215,9 +210,7 @@ func (e *Emitter) emitB(line string) {
 
 			// Max length for subsequent literal chunks on continuation lines
 			maxLenContinueLiteral := cobolLineEndCol - len(continuationPrefix) - 2 // -"literal"
-			if maxLenContinueLiteral < 0 {
-				maxLenContinueLiteral = 0
-			}
+			maxLenContinueLiteral = max(maxLenContinueLiteral, 0)
 
 			lastLiteralLineContent := "" // Track the content written on the last line used for literals
 
@@ -312,12 +305,12 @@ func (e *Emitter) emitComment(comment string) {
 
 // --- Analysis Phase ---
 
-func (e *Emitter) analyzeProgram(program *Program) {
+func (e *Emitter) analyzeProgram(program *ast.Program) {
 	e.needsTempInt = false
 	e.needsTempString = false
 	e.needsReturnInt = false
 	e.needsReturnStr = false
-	e.procInfo = make(map[string]SymbolInfo) // Use this as the main cache
+	e.procInfo = make(map[string]ast.SymbolInfo) // Use this as the main cache
 
 	if program.SymbolTable == nil {
 		e.addError("Internal Emitter Error: Program Symbol Table is nil during analysis phase.")
@@ -343,39 +336,39 @@ func (e *Emitter) analyzeProgram(program *Program) {
 	}
 }
 
-func (e *Emitter) analyzeStatement(stmt Statement) {
+func (e *Emitter) analyzeStatement(stmt ast.Statement) {
 	switch s := stmt.(type) {
-	case *ProcDeclarationStatement:
+	case *ast.ProcDeclarationStatement:
 		if s.Body != nil {
 			for _, bodyStmt := range s.Body.Statements {
 				e.analyzeStatement(bodyStmt)
 			}
 		}
-	case *PrintStatement:
+	case *ast.PrintStatement:
 		e.analyzeExpression(s.Value)
-	case *DeclarationStatement:
+	case *ast.DeclarationStatement:
 		e.analyzeExpression(s.Value)
-	case *ReassignmentStatement:
+	case *ast.ReassignmentStatement:
 		e.analyzeExpression(s.Value)
-	case *ReturnStatement:
+	case *ast.ReturnStatement:
 		if s.ReturnValue != nil {
 			e.analyzeExpression(s.ReturnValue)
 		}
-	case *ExpressionStatement:
+	case *ast.ExpressionStatement:
 		e.analyzeExpression(s.Expression)
-	case *BlockStatement:
+	case *ast.BlockStatement:
 		for _, blockStmt := range s.Statements {
 			e.analyzeStatement(blockStmt)
 		}
 	}
 }
 
-func (e *Emitter) analyzeExpression(expr Expression) {
+func (e *Emitter) analyzeExpression(expr ast.Expression) {
 	if expr == nil {
 		return
 	}
 	switch ex := expr.(type) {
-	case *BinaryExpression:
+	case *ast.BinaryExpression:
 		resultType := ex.ResultType()
 		// Need temp if not folded AND type is int/string
 		if resultType == "int" && !isConstantFoldedInt(ex) {
@@ -386,38 +379,38 @@ func (e *Emitter) analyzeExpression(expr Expression) {
 		}
 		e.analyzeExpression(ex.Left)
 		e.analyzeExpression(ex.Right)
-	case *GroupedExpression:
+	case *ast.GroupedExpression:
 		e.analyzeExpression(ex.Expression)
-	case *ProcCallExpression:
+	case *ast.ProcCallExpression:
 		for _, arg := range ex.Arguments {
 			e.analyzeExpression(arg)
 		}
 	// Base cases (Identifier, Literals) don't trigger needs flags
-	case *Identifier, *IntegerLiteral, *StringLiteral:
+	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral:
 	}
 }
 
 // Helper to check if a binary int expression was folded by the parser
-func isConstantFoldedInt(be *BinaryExpression) bool {
-	_, leftIsLit := be.Left.(*IntegerLiteral)
+func isConstantFoldedInt(be *ast.BinaryExpression) bool {
+	_, leftIsLit := be.Left.(*ast.IntegerLiteral)
 	// If Left is literal and Operator is empty, it was folded.
 	return leftIsLit && be.Operator == ""
 }
 
 // Helper to check if a binary string expression was folded by the parser
-func isConstantFoldedString(be *BinaryExpression) bool {
-	_, leftIsLit := be.Left.(*StringLiteral)
+func isConstantFoldedString(be *ast.BinaryExpression) bool {
+	_, leftIsLit := be.Left.(*ast.StringLiteral)
 	// If Left is literal and Operator is empty, it was folded.
 	return leftIsLit && be.Operator == ""
 }
 
 // --- Main Emit Function ---
 
-func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
+func (e *Emitter) Emit(program *ast.Program, nameWithoutExt string) string {
 	e.builder.Reset()
 	e.errors = []string{}
 	e.declaredVars = make(map[string]bool)
-	e.procInfo = make(map[string]SymbolInfo)
+	e.procInfo = make(map[string]ast.SymbolInfo)
 
 	// Analyze first to set flags and cache procInfo
 	e.analyzeProgram(program)
@@ -431,7 +424,7 @@ func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
 
 	hasProcs := false
 	for _, stmt := range program.Statements {
-		if _, ok := stmt.(*ProcDeclarationStatement); ok {
+		if _, ok := stmt.(*ast.ProcDeclarationStatement); ok {
 			hasProcs = true
 			break
 		}
@@ -440,7 +433,7 @@ func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
 	if hasProcs {
 		e.builder.WriteString(areaAIndent + "DECLARATIVES.\n\n")
 		for _, stmt := range program.Statements {
-			if procDecl, ok := stmt.(*ProcDeclarationStatement); ok {
+			if procDecl, ok := stmt.(*ast.ProcDeclarationStatement); ok {
 				e.emitStatement(procDecl)
 			}
 		}
@@ -451,7 +444,7 @@ func (e *Emitter) Emit(program *Program, nameWithoutExt string) string {
 
 	e.builder.WriteString(areaAIndent + "MAIN SECTION.\n")
 	for _, stmt := range program.Statements {
-		if _, ok := stmt.(*ProcDeclarationStatement); !ok {
+		if _, ok := stmt.(*ast.ProcDeclarationStatement); !ok {
 			e.emitStatement(stmt)
 		}
 	}
@@ -470,7 +463,7 @@ func (e *Emitter) emitHeader(nameWithoutExt string) {
 
 // emitDataDivision declares global variables, parameters (as globals currently),
 // and necessary helper variables (temps, returns).
-func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
+func (e *Emitter) emitDataDivision(symbolTable map[string]ast.SymbolInfo) {
 	// fmt.Println("DEBUG: >>> Entering emitDataDivision <<<")
 	e.declaredVars = make(map[string]bool) // Reset for this emission
 
@@ -481,7 +474,7 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 
 	if symbolTable == nil {
 		e.addError("Internal Emitter Error: Symbol Table is nil during Data Division emission.")
-		symbolTable = make(map[string]SymbolInfo) // Avoid nil panic
+		symbolTable = make(map[string]ast.SymbolInfo) // Avoid nil panic
 	}
 
 	// Use the cached e.procInfo which contains ALL symbols from analyzeProgram
@@ -667,28 +660,28 @@ func (e *Emitter) emitDataDivision(symbolTable map[string]SymbolInfo) {
 
 // --- Emit Statements ---
 
-func (e *Emitter) emitStatement(stmt Statement) {
+func (e *Emitter) emitStatement(stmt ast.Statement) {
 	switch s := stmt.(type) {
-	case *ReturnStatement:
+	case *ast.ReturnStatement:
 		e.emitReturnStatement(s)
-	case *ProcDeclarationStatement:
+	case *ast.ProcDeclarationStatement:
 		e.emitProcDeclaration(s)
-	case *ExpressionStatement:
+	case *ast.ExpressionStatement:
 		e.emitExpressionStatement(s)
-	case *BlockStatement:
+	case *ast.BlockStatement:
 		e.emitBlockStatement(s)
-	case *PrintStatement:
+	case *ast.PrintStatement:
 		e.emitPrint(s)
-	case *DeclarationStatement:
+	case *ast.DeclarationStatement:
 		e.emitDeclaration(s)
-	case *ReassignmentStatement:
+	case *ast.ReassignmentStatement:
 		e.emitReassignment(s)
 	default:
 		e.addError("Emitter encountered unknown statement type: %T", stmt)
 	}
 }
 
-func (e *Emitter) emitPrint(stmt *PrintStatement) {
+func (e *Emitter) emitPrint(stmt *ast.PrintStatement) {
 	if stmt == nil || stmt.Value == nil {
 		e.addError("Emitter Error: Invalid print statement (nil)")
 		return
@@ -702,7 +695,7 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 	}
 
 	if isLiteral {
-		if strLit, ok := stmt.Value.(*StringLiteral); ok && strLit.Value == "" {
+		if strLit, ok := stmt.Value.(*ast.StringLiteral); ok && strLit.Value == "" {
 			e.emitB("DISPLAY SPACE")
 		} else {
 			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
@@ -712,7 +705,7 @@ func (e *Emitter) emitPrint(stmt *PrintStatement) {
 	}
 }
 
-func (e *Emitter) emitDeclaration(stmt *DeclarationStatement) {
+func (e *Emitter) emitDeclaration(stmt *ast.DeclarationStatement) {
 	if stmt == nil || stmt.Name == nil || stmt.Value == nil {
 		e.addError("Emitter Error: Invalid declaration statement (nil)")
 		return
@@ -728,7 +721,7 @@ func (e *Emitter) emitDeclaration(stmt *DeclarationStatement) {
 	_ = err // Error is added within emitAssignment or its callees
 }
 
-func (e *Emitter) emitReassignment(stmt *ReassignmentStatement) {
+func (e *Emitter) emitReassignment(stmt *ast.ReassignmentStatement) {
 	if stmt == nil || stmt.Name == nil || stmt.Value == nil {
 		e.addError("Emitter Error: Invalid reassignment statement (nil)")
 		return
@@ -745,13 +738,13 @@ func (e *Emitter) emitReassignment(stmt *ReassignmentStatement) {
 
 // --- Core Expression/Assignment Helpers ---
 
-func (e *Emitter) emitExpressionForResult(expr Expression) (string, bool, error) {
+func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, error) {
 	if expr == nil {
 		return "", false, fmt.Errorf("cannot emit nil expression")
 	}
 
 	switch node := expr.(type) {
-	case *Identifier:
+	case *ast.Identifier:
 		cobolName := sanitizeIdentifier(node.Value)
 		// Check if it's a known variable/parameter OR a procedure name
 		info, declared := e.procInfo[node.Value] // Check combined cache
@@ -769,19 +762,19 @@ func (e *Emitter) emitExpressionForResult(expr Expression) (string, bool, error)
 		// It's a declared variable/parameter
 		return cobolName, false, nil
 
-	case *IntegerLiteral:
+	case *ast.IntegerLiteral:
 		return fmt.Sprintf("%d", node.Value), true, nil
 
-	case *StringLiteral:
+	case *ast.StringLiteral:
 		escapedValue := strings.ReplaceAll(node.Value, `"`, `""`)
 		return fmt.Sprintf(`"%s"`, escapedValue), true, nil
 
-	case *BinaryExpression:
+	case *ast.BinaryExpression:
 		if isConstantFoldedInt(node) {
-			return fmt.Sprintf("%d", node.Left.(*IntegerLiteral).Value), true, nil
+			return fmt.Sprintf("%d", node.Left.(*ast.IntegerLiteral).Value), true, nil
 		}
 		if isConstantFoldedString(node) {
-			escapedValue := strings.ReplaceAll(node.Left.(*StringLiteral).Value, `"`, `""`)
+			escapedValue := strings.ReplaceAll(node.Left.(*ast.StringLiteral).Value, `"`, `""`)
 			return fmt.Sprintf(`"%s"`, escapedValue), true, nil
 		}
 
@@ -815,10 +808,10 @@ func (e *Emitter) emitExpressionForResult(expr Expression) (string, bool, error)
 			return "", false, err
 		}
 
-	case *GroupedExpression:
+	case *ast.GroupedExpression:
 		return e.emitExpressionForResult(node.Expression)
 
-	case *ProcCallExpression:
+	case *ast.ProcCallExpression:
 		resultVar, err := e.emitProcCallAndGetResultVar(node)
 		if err != nil {
 			return "", false, err
@@ -837,7 +830,7 @@ func (e *Emitter) emitExpressionForResult(expr Expression) (string, bool, error)
 	}
 }
 
-func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr Expression) error {
+func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expression) error {
 	sourceEntity, isLiteral, err := e.emitExpressionForResult(rhsExpr)
 	if err != nil {
 		return err
@@ -854,11 +847,11 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr Expression) 
 	// Check if RHS was originally a binary expression that wasn't folded
 	// If so, emit COMPUTE/STRING directly into target instead of via temp var.
 	actualRhsExpr := rhsExpr
-	if grp, ok := rhsExpr.(*GroupedExpression); ok {
+	if grp, ok := rhsExpr.(*ast.GroupedExpression); ok {
 		actualRhsExpr = grp.Expression
 	}
 
-	if binExpr, ok := actualRhsExpr.(*BinaryExpression); ok {
+	if binExpr, ok := actualRhsExpr.(*ast.BinaryExpression); ok {
 		if !isConstantFoldedInt(binExpr) && !isConstantFoldedString(binExpr) {
 			if binExpr.ResultType() == "int" {
 				computeStr, err := e.emitExpressionForCompute(binExpr)
@@ -889,14 +882,14 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr Expression) 
 	return nil
 }
 
-func (e *Emitter) emitExpressionForCompute(expr Expression) (string, error) {
+func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) {
 	if expr == nil {
 		err := fmt.Errorf("nil expression")
 		e.addError("Internal Emitter Error: %v", err)
 		return "", err
 	}
 	switch node := expr.(type) {
-	case *Identifier:
+	case *ast.Identifier:
 		cobolName := sanitizeIdentifier(node.Value)
 		info, ok := e.procInfo[node.Value]
 		if !ok {
@@ -910,13 +903,13 @@ func (e *Emitter) emitExpressionForCompute(expr Expression) (string, error) {
 			return "", err
 		}
 		return cobolName, nil
-	case *IntegerLiteral:
+	case *ast.IntegerLiteral:
 		return fmt.Sprintf("%d", node.Value), nil
-	case *StringLiteral:
+	case *ast.StringLiteral:
 		err := fmt.Errorf("string literal '%s' in arithmetic", node.Value)
 		e.addError("Emitter Error: %v", err)
 		return "", err
-	case *BinaryExpression:
+	case *ast.BinaryExpression:
 		if node.ResultType() != "int" {
 			err := fmt.Errorf("non-int binary expr in arithmetic (%s)", node.ResultType())
 			e.addError("Internal Error: %v", err)
@@ -931,31 +924,31 @@ func (e *Emitter) emitExpressionForCompute(expr Expression) (string, error) {
 			return "", errR
 		}
 		// Add parens defensively
-		if _, ok := node.Left.(*BinaryExpression); ok {
+		if _, ok := node.Left.(*ast.BinaryExpression); ok {
 			leftStr = fmt.Sprintf("( %s )", leftStr)
 		}
-		if _, ok := node.Left.(*GroupedExpression); ok {
+		if _, ok := node.Left.(*ast.GroupedExpression); ok {
 			leftStr = fmt.Sprintf("( %s )", leftStr)
 		}
-		if _, ok := node.Right.(*BinaryExpression); ok {
+		if _, ok := node.Right.(*ast.BinaryExpression); ok {
 			rightStr = fmt.Sprintf("( %s )", rightStr)
 		}
-		if _, ok := node.Right.(*GroupedExpression); ok {
+		if _, ok := node.Right.(*ast.GroupedExpression); ok {
 			rightStr = fmt.Sprintf("( %s )", rightStr)
 		}
 		if node.Operator == "/" {
-			if lit, ok := node.Right.(*IntegerLiteral); ok && lit.Value == 0 {
+			if lit, ok := node.Right.(*ast.IntegerLiteral); ok && lit.Value == 0 {
 				e.emitComment("WARNING: Potential division by zero")
 			}
 		}
 		return fmt.Sprintf("%s %s %s", leftStr, node.Operator, rightStr), nil
-	case *GroupedExpression:
+	case *ast.GroupedExpression:
 		innerExprStr, err := e.emitExpressionForCompute(node.Expression)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("( %s )", innerExprStr), nil
-	case *ProcCallExpression:
+	case *ast.ProcCallExpression:
 		err := fmt.Errorf("proc call '%s' in arithmetic", node.Function.Value)
 		e.addError("Emitter Error: %v", err)
 		return "", err
@@ -967,7 +960,7 @@ func (e *Emitter) emitExpressionForCompute(expr Expression) (string, error) {
 }
 
 // emitProcDeclaration emits a COBOL SECTION for a procedure.
-func (e *Emitter) emitProcDeclaration(stmt *ProcDeclarationStatement) {
+func (e *Emitter) emitProcDeclaration(stmt *ast.ProcDeclarationStatement) {
 	if stmt == nil || stmt.Name == nil || stmt.Body == nil || stmt.ReturnType == nil {
 		e.addError("Emitter Error: Invalid proc decl node")
 		return
@@ -994,7 +987,7 @@ func (e *Emitter) emitProcDeclaration(stmt *ProcDeclarationStatement) {
 	e.builder.WriteString("\n") // Add blank line after section for readability
 }
 
-func (e *Emitter) emitBlockStatement(block *BlockStatement) {
+func (e *Emitter) emitBlockStatement(block *ast.BlockStatement) {
 	if block == nil {
 		return
 	}
@@ -1003,7 +996,7 @@ func (e *Emitter) emitBlockStatement(block *BlockStatement) {
 	}
 }
 
-func (e *Emitter) emitReturnStatement(stmt *ReturnStatement) {
+func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) {
 	if stmt == nil {
 		e.addError("Emitter Error: Invalid return statement node")
 		return
@@ -1071,12 +1064,12 @@ func (e *Emitter) emitReturnStatement(stmt *ReturnStatement) {
 	_ = err                                                // Error handled within emitAssignment
 }
 
-func (e *Emitter) emitExpressionStatement(stmt *ExpressionStatement) {
+func (e *Emitter) emitExpressionStatement(stmt *ast.ExpressionStatement) {
 	if stmt == nil || stmt.Expression == nil {
 		e.addError("Emitter Error: Invalid expression statement node")
 		return
 	}
-	if procCall, ok := stmt.Expression.(*ProcCallExpression); ok {
+	if procCall, ok := stmt.Expression.(*ast.ProcCallExpression); ok {
 		_, err := e.emitProcCallAndGetResultVar(procCall) // Call, ignore result var name
 		_ = err                                           // Error handled internally
 	} else {
@@ -1084,7 +1077,7 @@ func (e *Emitter) emitExpressionStatement(stmt *ExpressionStatement) {
 	}
 }
 
-func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ProcCallExpression) (string, error) {
+func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ast.ProcCallExpression) (string, error) {
 	if callExpr == nil || callExpr.Function == nil {
 		err := fmt.Errorf("invalid proc call AST")
 		e.addError("Emitter Error: %v", err)
@@ -1158,7 +1151,7 @@ func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ProcCallExpression) (str
 	}
 }
 
-func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *BinaryExpression) error {
+func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *ast.BinaryExpression) error {
 	operands := []string{}
 	tempVarsNeeded := make(map[string]string) // Should not be needed with current collectStringOperands
 
@@ -1195,20 +1188,20 @@ func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *BinaryExp
 
 // collectStringOperands recursively gathers COBOL entities (literals/vars) for STRING.
 // CURRENTLY DOES NOT SUPPORT non-string/non-concat expressions requiring temp vars.
-func (e *Emitter) collectStringOperands(expr Expression, operands *[]string, tempVarsNeeded map[string]string) error {
+func (e *Emitter) collectStringOperands(expr ast.Expression, operands *[]string, tempVarsNeeded map[string]string) error {
 	if expr == nil {
 		err := fmt.Errorf("nil expression")
 		e.addError("Internal Error: %v", err)
 		return err
 	}
 	switch node := expr.(type) {
-	case *StringLiteral:
+	case *ast.StringLiteral:
 		litStr, _, err := e.emitExpressionForResult(node)
 		if err != nil {
 			return err
 		}
 		*operands = append(*operands, litStr)
-	case *Identifier:
+	case *ast.Identifier:
 		cobolName := sanitizeIdentifier(node.Value)
 		info, ok := e.procInfo[node.Value] // Check cache (includes globals/params)
 		if !ok {
@@ -1222,7 +1215,7 @@ func (e *Emitter) collectStringOperands(expr Expression, operands *[]string, tem
 			return err
 		}
 		*operands = append(*operands, cobolName)
-	case *BinaryExpression:
+	case *ast.BinaryExpression:
 		if node.Operator == "+" && node.ResultType() == "string" {
 			if isConstantFoldedString(node) {
 				return e.collectStringOperands(node.Left, operands, tempVarsNeeded)
@@ -1244,9 +1237,9 @@ func (e *Emitter) collectStringOperands(expr Expression, operands *[]string, tem
 			return err
 			// --- End Handling ---
 		}
-	case *GroupedExpression:
+	case *ast.GroupedExpression:
 		return e.collectStringOperands(node.Expression, operands, tempVarsNeeded)
-	case *ProcCallExpression:
+	case *ast.ProcCallExpression:
 		// --- Handling proc call operands ---
 		// Similar to non-string binary ops, needs temp var. Currently unsupported directly.
 		err := fmt.Errorf("cannot use result of proc call '%s' (type %s) directly in string concat", node.Function.Value, node.ResultType())

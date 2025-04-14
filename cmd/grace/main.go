@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/arnavsurve/grace/internal/compiler"
+	"github.com/arnavsurve/grace/internal/compiler/ast"
+	"github.com/arnavsurve/grace/internal/compiler/emitter"
+	"github.com/arnavsurve/grace/internal/compiler/lexer"
+	"github.com/arnavsurve/grace/internal/compiler/parser"
 )
 
 func main() {
@@ -35,8 +38,8 @@ func main() {
 	fmt.Println("Source:")
 	fmt.Println(string(content))
 
-	lexer := compiler.NewLexer(string(content))
-	parser := compiler.NewParser(lexer)
+	lexer := lexer.NewLexer(string(content))
+	parser := parser.NewParser(lexer)
 	program := parser.ParseProgram()
 
 	// Check for parser errors
@@ -51,11 +54,11 @@ func main() {
 
 	fmt.Println("AST:")
 	for _, stmt := range program.Statements {
-		compiler.PrintAST(stmt, "")
+		ast.PrintAST(stmt, "")
 	}
 	fmt.Println()
 
-	emitter := compiler.NewEmitter()
+	emitter := emitter.NewEmitter()
 	cobolOutput := emitter.Emit(program, nameWithoutExt)
 
 	// Check for emitter errors

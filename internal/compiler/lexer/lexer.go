@@ -1,4 +1,6 @@
-package compiler
+package lexer
+
+import "github.com/arnavsurve/grace/internal/compiler/token"
 
 type Lexer struct {
 	input        string
@@ -44,13 +46,13 @@ func (l *Lexer) peekChar() byte {
 	return l.input[l.readPosition]
 }
 
-func (l *Lexer) NextToken() Token {
+func (l *Lexer) NextToken() token.Token {
 	l.skipWhitespace()
 
 	startLine := l.line
 	startCol := l.column
 
-	var tok Token
+	var tok token.Token
 
 	switch l.ch {
 	case '/':
@@ -61,47 +63,47 @@ func (l *Lexer) NextToken() Token {
 			return l.NextToken()
 		} else {
 			// Division
-			tok = Token{Type: TokenSlash, Literal: string(l.ch), Line: startLine, Column: startCol}
+			tok = token.Token{Type: token.TokenSlash, Literal: string(l.ch), Line: startLine, Column: startCol}
 			l.readChar()
 			return tok
 		}
 	case '=':
-		tok = Token{Type: TokenAssign, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenAssign, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '(':
-		tok = Token{Type: TokenLParen, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenLParen, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case ')':
-		tok = Token{Type: TokenRParen, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenRParen, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '{':
-		tok = Token{Type: TokenLBrace, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenLBrace, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '}':
-		tok = Token{Type: TokenRBrace, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenRBrace, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '+':
-		tok = Token{Type: TokenPlus, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenPlus, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '-':
-		tok = Token{Type: TokenMinus, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenMinus, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '*':
-		tok = Token{Type: TokenAsterisk, Literal: string(l.ch), Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenAsterisk, Literal: string(l.ch), Line: startLine, Column: startCol}
 		l.readChar()
 		return tok
 	case '"':
 		// readString consumes necessary chars and returns the token
 		return l.readString(startLine, startCol)
 	case ',':
-		tok = l.newToken(TokenComma, string(l.ch), startLine, startCol)
+		tok = l.newToken(token.TokenComma, string(l.ch), startLine, startCol)
 		l.readChar() // Consume the comma
 		return tok   // Return immediately
 	case ':':
@@ -109,17 +111,17 @@ func (l *Lexer) NextToken() Token {
 			ch := l.ch
 			l.readChar()
 			literal := string(ch) + string(l.ch)
-			tok = Token{Type: TokenAssignDefine, Literal: literal, Line: startLine, Column: startCol}
+			tok = token.Token{Type: token.TokenAssignDefine, Literal: literal, Line: startLine, Column: startCol}
 			l.readChar()
 			return tok
 		} else {
-			tok = Token{Type: TokenColon, Literal: string(l.ch), Line: startLine, Column: startCol}
+			tok = token.Token{Type: token.TokenColon, Literal: string(l.ch), Line: startLine, Column: startCol}
 			l.readChar()
 			return tok
 		}
 	case 0:
 		// EOF
-		tok = Token{Type: TokenEOF, Literal: "", Line: startLine, Column: startCol}
+		tok = token.Token{Type: token.TokenEOF, Literal: "", Line: startLine, Column: startCol}
 		// Do NOT call l.readChar() here
 		return tok
 	default:
@@ -131,16 +133,16 @@ func (l *Lexer) NextToken() Token {
 		} else if isDigit(l.ch) {
 			return l.readInteger(startLine, startCol)
 		} else {
-			tok = l.newToken(TokenIllegal, string(l.ch), startLine, startCol)
+			tok = l.newToken(token.TokenIllegal, string(l.ch), startLine, startCol)
 			l.readChar()
 			return tok
 		}
 	}
 }
 
-// newToken is a helper to create a Token struct
-func (l *Lexer) newToken(tokenType TokenType, literal string, line, col int) Token {
-	return Token{Type: tokenType, Literal: literal, Line: line, Column: col}
+// newToken is a helper to create a token.Token struct
+func (l *Lexer) newToken(tokenType token.TokenType, literal string, line, col int) token.Token {
+	return token.Token{Type: tokenType, Literal: literal, Line: line, Column: col}
 }
 
 func (l *Lexer) skipWhitespace() {
@@ -163,7 +165,7 @@ func (l *Lexer) readIdentifier() string {
 	return l.input[start:l.position]
 }
 
-func (l *Lexer) readString(startLine, startCol int) Token {
+func (l *Lexer) readString(startLine, startCol int) token.Token {
 	start := l.position + 1 // Skip opening "
 	l.readChar()            // Consume opening "
 
@@ -176,21 +178,21 @@ func (l *Lexer) readString(startLine, startCol int) Token {
 		// TODO: Unterminated string - handle error?
 		// For now, return what was read as illegal or handle in parser
 		lit := l.input[start:l.position]
-		return Token{Type: TokenString, Literal: lit, Line: startLine, Column: startCol}
+		return token.Token{Type: token.TokenString, Literal: lit, Line: startLine, Column: startCol}
 	}
 
 	lit := l.input[start:l.position]
 	l.readChar() // Consume closing "
-	return Token{Type: TokenString, Literal: lit, Line: startLine, Column: startCol}
+	return token.Token{Type: token.TokenString, Literal: lit, Line: startLine, Column: startCol}
 }
 
-func (l *Lexer) readInteger(startLine, startCol int) Token {
+func (l *Lexer) readInteger(startLine, startCol int) token.Token {
 	start := l.position
 	for isDigit(l.ch) {
 		l.readChar()
 	}
 	literal := l.input[start:l.position]
-	return Token{Type: TokenInt, Literal: literal, Line: startLine, Column: startCol}
+	return token.Token{Type: token.TokenInt, Literal: literal, Line: startLine, Column: startCol}
 }
 
 func isLetter(ch byte) bool {
@@ -202,24 +204,24 @@ func isDigit(ch byte) bool {
 }
 
 // keywords maps identifier strings to their corresponding token types.
-var keywords = map[string]TokenType{
-	"print":  TokenPrint,
-	"const":  TokenConst,
-	"proc":   TokenProc,
-	"return": TokenReturn,
-	"void":   TokenVoid,
-	"int":    TokenTypeLiteral,
-	"string": TokenTypeLiteral,
+var keywords = map[string]token.TokenType{
+	"print":  token.TokenPrint,
+	"const":  token.TokenConst,
+	"proc":   token.TokenProc,
+	"return": token.TokenReturn,
+	"void":   token.TokenVoid,
+	"int":    token.TokenTypeLiteral,
+	"string": token.TokenTypeLiteral,
 	// Add other type keywords like "bool" here if needed
 }
 
 // lookupIdent checks if an identifier is a keyword, returning the keyword's
-// token type or TokenIdent if it's not a keyword.
-func lookupIdent(ident string) TokenType {
+// token type or token.TokenIdent if it's not a keyword.
+func lookupIdent(ident string) token.TokenType {
 	// Use case-sensitive lookup
 	if tokType, ok := keywords[ident]; ok {
 		return tokType
 	}
 	// Not a keyword, it's a user-defined identifier
-	return TokenIdent
+	return token.TokenIdent
 }

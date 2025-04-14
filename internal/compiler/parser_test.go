@@ -3,13 +3,16 @@ package compiler
 import (
 	"testing"
 
+	"github.com/arnavsurve/grace/internal/compiler/ast"
+	"github.com/arnavsurve/grace/internal/compiler/lexer"
 	"github.com/arnavsurve/grace/internal/compiler/lib"
+	"github.com/arnavsurve/grace/internal/compiler/parser"
 )
 
 // --- Test Helper Functions ---
 
 // checkParserErrors checks for fatal errors. Logs warnings but doesn't fail for them.
-func checkParserErrors(t *testing.T, p *Parser) {
+func checkParserErrors(t *testing.T, p *parser.Parser) {
 	t.Helper() // Marks this function as a test helper
 	errors := p.Errors()
 	warnings := p.Warnings()
@@ -49,8 +52,8 @@ sayHi()
 print("...proc called")
 `
 
-	l := NewLexer(input)
-	p := NewParser(l)
+	l := lexer.NewLexer(input)
+	p := parser.NewParser(l)
 	program := p.ParseProgram()
 
 	checkParserErrors(t, p) // Check for fatal errors
@@ -64,7 +67,7 @@ print("...proc called")
 
 	// Check Proc 'sayHi'
 	stmt1 := program.Statements[0]
-	procDecl, ok := stmt1.(*ProcDeclarationStatement)
+	procDecl, ok := stmt1.(*ast.ProcDeclarationStatement)
 	if !ok {
 		t.Fatalf("program.Statements[0] not *ProcDeclarationStatement, got=%T", stmt1)
 	}
@@ -95,17 +98,17 @@ print("...proc called")
 	if len(procDecl.Body.Statements) != 1 {
 		t.Fatalf("sayHi body expected 1 statement, got %d", len(procDecl.Body.Statements))
 	}
-	if _, ok := procDecl.Body.Statements[0].(*PrintStatement); !ok {
+	if _, ok := procDecl.Body.Statements[0].(*ast.PrintStatement); !ok {
 		t.Errorf("sayHi body stmt 0 not PrintStatement")
 	}
 
 	// Check Call (Statement 3)
 	stmt3 := program.Statements[2]
-	exprStmt, ok := stmt3.(*ExpressionStatement)
+	exprStmt, ok := stmt3.(*ast.ExpressionStatement)
 	if !ok {
 		t.Fatalf("program.Statements[2] not *ExpressionStatement")
 	}
-	callExpr, ok := exprStmt.Expression.(*ProcCallExpression)
+	callExpr, ok := exprStmt.Expression.(*ast.ProcCallExpression)
 	if !ok {
 		t.Fatalf("Stmt 3 expression not ProcCallExpression")
 	}
@@ -177,8 +180,8 @@ greet("Again")
 
 print("Done.")
 `
-	l := NewLexer(input)
-	p := NewParser(l)
+	l := lexer.NewLexer(input)
+	p := parser.NewParser(l)
 	program := p.ParseProgram()
 
 	// 1. Check for Parser Errors (warnings are ok, checkParserErrors handles this)
@@ -194,7 +197,7 @@ print("Done.")
 
 	// --- Check Proc 'add' ---
 	stmt1 := program.Statements[0]
-	addProc, ok := stmt1.(*ProcDeclarationStatement)
+	addProc, ok := stmt1.(*ast.ProcDeclarationStatement)
 	if !ok {
 		t.Fatalf("program.Statements[0] not *ProcDeclarationStatement, got=%T", stmt1)
 	}
@@ -251,10 +254,10 @@ print("Done.")
 	if len(addProc.Body.Statements) != 2 {
 		t.Fatalf("addProc body expected 2 statements, got %d", len(addProc.Body.Statements))
 	}
-	if _, ok := addProc.Body.Statements[0].(*DeclarationStatement); !ok {
+	if _, ok := addProc.Body.Statements[0].(*ast.DeclarationStatement); !ok {
 		t.Errorf("addProc body stmt 0 not DeclarationStatement")
 	}
-	retStmtAdd, ok := addProc.Body.Statements[1].(*ReturnStatement)
+	retStmtAdd, ok := addProc.Body.Statements[1].(*ast.ReturnStatement)
 	if !ok {
 		t.Errorf("addProc body stmt 1 not ReturnStatement")
 	}
@@ -264,7 +267,7 @@ print("Done.")
 
 	// --- Check Proc 'greet' ---
 	stmt2 := program.Statements[1]
-	greetProc, ok := stmt2.(*ProcDeclarationStatement)
+	greetProc, ok := stmt2.(*ast.ProcDeclarationStatement)
 	if !ok {
 		t.Fatalf("program.Statements[1] not *ProcDeclarationStatement, got=%T", stmt2)
 	}
@@ -301,10 +304,10 @@ print("Done.")
 	if len(greetProc.Body.Statements) != 2 {
 		t.Fatalf("greetProc body expected 2 statements, got %d", len(greetProc.Body.Statements))
 	}
-	if _, ok := greetProc.Body.Statements[0].(*DeclarationStatement); !ok {
+	if _, ok := greetProc.Body.Statements[0].(*ast.DeclarationStatement); !ok {
 		t.Errorf("greetProc body stmt 0 not DeclarationStatement")
 	}
-	retStmtGreet, ok := greetProc.Body.Statements[1].(*ReturnStatement)
+	retStmtGreet, ok := greetProc.Body.Statements[1].(*ast.ReturnStatement)
 	if !ok {
 		t.Errorf("greetProc body stmt 1 not ReturnStatement")
 	}
@@ -314,7 +317,7 @@ print("Done.")
 
 	// --- Check Proc 'doNothing' ---
 	stmt3 := program.Statements[2]
-	voidProc, ok := stmt3.(*ProcDeclarationStatement)
+	voidProc, ok := stmt3.(*ast.ProcDeclarationStatement)
 	if !ok {
 		t.Fatalf("program.Statements[2] not *ProcDeclarationStatement, got=%T", stmt3)
 	}
@@ -345,13 +348,13 @@ print("Done.")
 	if len(voidProc.Body.Statements) != 3 {
 		t.Fatalf("voidProc body expected 3 statements, got %d", len(voidProc.Body.Statements))
 	}
-	if _, ok := voidProc.Body.Statements[0].(*PrintStatement); !ok {
+	if _, ok := voidProc.Body.Statements[0].(*ast.PrintStatement); !ok {
 		t.Errorf("voidProc body stmt 0 not PrintStatement")
 	}
-	if _, ok := voidProc.Body.Statements[1].(*PrintStatement); !ok {
+	if _, ok := voidProc.Body.Statements[1].(*ast.PrintStatement); !ok {
 		t.Errorf("voidProc body stmt 1 not PrintStatement")
 	}
-	retStmtVoid, ok := voidProc.Body.Statements[2].(*ReturnStatement)
+	retStmtVoid, ok := voidProc.Body.Statements[2].(*ast.ReturnStatement)
 	if !ok {
 		t.Errorf("voidProc body stmt 2 not ReturnStatement")
 	}
@@ -361,14 +364,14 @@ print("Done.")
 
 	// --- Check Main Logic Statements ---
 	// Stmt 4: Declaration `res := add(...)`
-	declStmt1, ok := program.Statements[3].(*DeclarationStatement)
+	declStmt1, ok := program.Statements[3].(*ast.DeclarationStatement)
 	if !ok {
 		t.Fatalf("program.Statements[3] not DeclarationStatement")
 	}
 	if declStmt1.Name.Value != "res" {
 		t.Errorf("Decl stmt 1 name mismatch")
 	}
-	callExpr1, ok := declStmt1.Value.(*ProcCallExpression)
+	callExpr1, ok := declStmt1.Value.(*ast.ProcCallExpression)
 	if !ok {
 		t.Fatalf("Decl stmt 1 value not ProcCallExpression")
 	}
@@ -386,19 +389,19 @@ print("Done.")
 	}
 
 	// Stmt 5: Print `print(res)`
-	if _, ok := program.Statements[4].(*PrintStatement); !ok {
+	if _, ok := program.Statements[4].(*ast.PrintStatement); !ok {
 		t.Fatalf("Stmt 5 not print")
 	}
 
 	// Stmt 6: Declaration `msg := greet(...)`
-	declStmt2, ok := program.Statements[5].(*DeclarationStatement)
+	declStmt2, ok := program.Statements[5].(*ast.DeclarationStatement)
 	if !ok {
 		t.Fatalf("program.Statements[5] not DeclarationStatement")
 	}
 	if declStmt2.Name.Value != "msg" {
 		t.Errorf("Decl stmt 2 name mismatch")
 	}
-	callExpr2, ok := declStmt2.Value.(*ProcCallExpression)
+	callExpr2, ok := declStmt2.Value.(*ast.ProcCallExpression)
 	if !ok {
 		t.Fatalf("Decl stmt 2 value not ProcCallExpression")
 	}
@@ -413,16 +416,16 @@ print("Done.")
 	}
 
 	// Stmt 7: Print `print(msg)`
-	if _, ok := program.Statements[6].(*PrintStatement); !ok {
+	if _, ok := program.Statements[6].(*ast.PrintStatement); !ok {
 		t.Fatalf("Stmt 7 not print")
 	}
 
 	// Stmt 8: Call `doNothing(...)` (ExpressionStatement)
-	exprStmt1, ok := program.Statements[7].(*ExpressionStatement)
+	exprStmt1, ok := program.Statements[7].(*ast.ExpressionStatement)
 	if !ok {
 		t.Fatalf("program.Statements[7] not ExpressionStatement")
 	}
-	callExpr3, ok := exprStmt1.Expression.(*ProcCallExpression)
+	callExpr3, ok := exprStmt1.Expression.(*ast.ProcCallExpression)
 	if !ok {
 		t.Fatalf("Stmt 8 expression not ProcCallExpression")
 	}
@@ -437,11 +440,11 @@ print("Done.")
 	}
 
 	// Stmt 9: Call `greet(...)` ignored result (ExpressionStatement)
-	exprStmt2, ok := program.Statements[8].(*ExpressionStatement)
+	exprStmt2, ok := program.Statements[8].(*ast.ExpressionStatement)
 	if !ok {
 		t.Fatalf("program.Statements[8] not ExpressionStatement")
 	}
-	callExpr4, ok := exprStmt2.Expression.(*ProcCallExpression)
+	callExpr4, ok := exprStmt2.Expression.(*ast.ProcCallExpression)
 	if !ok {
 		t.Fatalf("Stmt 9 expression not ProcCallExpression")
 	}
