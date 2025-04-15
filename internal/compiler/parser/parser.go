@@ -284,7 +284,7 @@ func (p *Parser) collectProcedureSignatures() (map[string]symbols.SymbolInfo, []
 			// Use the main parser logic for parameter list (carefully adapting state if needed, or making it standalone)
 			// For simplicity here, let's assume parseParameterList can work with the tempParser state
 			params, paramNames, err := tempParser.parseParameterList() // Needs to handle errors and token consumption correctly
-			if err != nil {
+			if err != nil || tempParser.curTok.Type != token.TokenRParen {
 				// Error already added by parseParameterList (or should be)
 				pass1Errs = append(pass1Errs, tempParser.errors...) // Collect errors
 				tempParser.errors = []string{}                      // Clear errors for next attempt
@@ -294,7 +294,7 @@ func (p *Parser) collectProcedureSignatures() (map[string]symbols.SymbolInfo, []
 			// At this point, curTok should be ')'
 
 			// Parse Return Type `: type`
-			if tempParser.curTok.Type != token.TokenRParen { // Sanity check
+			if tempParser.curTok.Type != token.TokenRParen {
 				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected ')' after parameter list", tempParser.curTok.Line, tempParser.curTok.Column))
 				tempParser.skipSignatureAndBody()
 				continue
@@ -748,6 +748,21 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 	}
 	// parseBlockStatement consumed '}'
 
+	// TODO: Check if there's a return statement.
+	// This is basic, just check if the last line in the proc body is a return stmt
+	// Need to revisit this for more complex control flow
+	if !stmt.ReturnType.IsVoid {
+		hasReturn := false
+		if len(stmt.Body.Statements) > 0 {
+			if _, ok := stmt.Body.Statements[len(stmt.Body.Statements)-1].(*ast.ReturnStatement); ok {
+				hasReturn = true
+			}
+		}
+		if !hasReturn {
+			p.addSemanticError(stmt.Name.Token, "Missing return statement in non-void procedure '%s'", procName)
+		}
+	}
+
 	// Scope is popped by defer
 
 	p.currentProcName = previousProcName // Restore outer context
@@ -788,7 +803,6 @@ func (p *Parser) parseTypeNode() *ast.TypeNode {
 		p.nextToken() // Consume '('
 		if p.curTok.Type != token.TokenInt {
 			p.addError(p.curTok, "Expected integer width inside parentheses for type '%s', got %s ('%s')", typeName, p.curTok.Type, p.curTok.Literal)
-			// Recovery? Skip until ')'? Difficult. Return nil.
 			// Consume the bad token inside parens if it's not ')'
 			if p.curTok.Type != token.TokenRParen && p.curTok.Type != token.TokenEOF {
 				p.nextToken()
