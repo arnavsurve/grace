@@ -225,6 +225,7 @@ type ProcDeclarationStatement struct {
 	Parameters []*Parameter
 	ReturnType *TypeNode
 	Body       *BlockStatement
+	LocalScope *scope.Scope
 }
 
 func (pds *ProcDeclarationStatement) statementNode()       {}

@@ -312,7 +312,12 @@ func (e *Emitter) analyzeProgram(program *ast.Program) {
 	e.needsReturnInt = false
 	e.needsReturnStr = false
 
-	if e.globalScope != nil && e.globalScope.Symbols != nil {
+	if e.globalScope == nil {
+		e.addError("Internal Emitter Error: GlobalScope map is nil during analysis phase.")
+		return
+	}
+
+	if e.globalScope.Symbols != nil {
 		for _, info := range e.globalScope.Symbols {
 			if info.Type == "proc" {
 				if info.ReturnType == "int" {
@@ -323,22 +328,20 @@ func (e *Emitter) analyzeProgram(program *ast.Program) {
 				}
 			}
 		}
-	} else {
-		e.addError("Internal Emitter Error: GlobalSymbols map is nil during analysis phase.")
 	}
 
 	// Traverse AST to check for complex operations needing temps
 	for _, stmt := range program.Statements {
-		e.analyzeStatement(stmt)
+		e.analyzeStatementForTemps(stmt)
 	}
 }
 
-func (e *Emitter) analyzeStatement(stmt ast.Statement) {
+func (e *Emitter) analyzeStatementForTemps(stmt ast.Statement) {
 	switch s := stmt.(type) {
 	case *ast.ProcDeclarationStatement:
 		if s.Body != nil {
 			for _, bodyStmt := range s.Body.Statements {
-				e.analyzeStatement(bodyStmt)
+				e.analyzeStatementForTemps(bodyStmt)
 			}
 		}
 	case *ast.PrintStatement:
@@ -355,7 +358,7 @@ func (e *Emitter) analyzeStatement(stmt ast.Statement) {
 		e.analyzeExpression(s.Expression)
 	case *ast.BlockStatement:
 		for _, blockStmt := range s.Statements {
-			e.analyzeStatement(blockStmt)
+			e.analyzeStatementForTemps(blockStmt)
 		}
 	}
 }
@@ -414,14 +417,14 @@ func (e *Emitter) Emit(program *ast.Program, nameWithoutExt string) string {
 	}
 
 	e.globalScope = program.GlobalScope
-
 	if e.globalScope == nil {
 		e.addError("Internal Emitter Error: Program AST has nil GlobalSymbols map.")
 	}
 
 	e.analyzeProgram(program) // Pass program for AST walk and global symbols map
+
 	e.emitHeader(nameWithoutExt)
-	e.emitDataDivision()
+	e.emitDataDivision(program.Statements)
 
 	e.builder.WriteString(areaAIndent + "PROCEDURE DIVISION.\n")
 
@@ -462,10 +465,8 @@ func (e *Emitter) emitHeader(nameWithoutExt string) {
 	e.builder.WriteString(areaAIndent + programId + "\n\n")
 }
 
-// emitDataDivision declares globals in WORKING-STORAGE, params in LOCAL-STORAGE
-func (e *Emitter) emitDataDivision() { // Use symbols.SymbolInfo
-	e.declaredVars = make(map[string]bool)     // Reset WORKING-STORAGE tracker
-	declaredLocalVars := make(map[string]bool) // Track LOCAL-STORAGE declarations
+func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
+	e.declaredVars = make(map[string]bool) // Reset global tracker for this emission
 
 	if e.globalScope == nil {
 		e.addError("Internal Emitter Error: GlobalSymbols map is nil during Data Division emission.")
@@ -473,29 +474,47 @@ func (e *Emitter) emitDataDivision() { // Use symbols.SymbolInfo
 	}
 
 	var globalVarNames []string
-	var procSymbols []symbols.SymbolInfo // Store proc info for LOCAL-STORAGE pass
+	procASTNodes := []*ast.ProcDeclarationStatement{}
 	hasGlobals := false
 	hasParams := false
+	hasLocals := false
 
-	// First pass: Identify global vars and check if helper vars are needed globally
-	if e.globalScope.Symbols != nil {
-		for name, info := range e.globalScope.Symbols {
-			if info.Type != "proc" {
-				globalVarNames = append(globalVarNames, name)
-				hasGlobals = true
-			} else {
-				procSymbols = append(procSymbols, info)
-				if len(info.ParamNames) > 0 {
-					hasParams = true
+	for _, stmt := range programStatements {
+		switch node := stmt.(type) {
+		case *ast.DeclarationStatement:
+			if node.Name != nil {
+				_, isGlobal := e.globalScope.Symbols[node.Name.Value]
+				if isGlobal {
+					globalVarNames = append(globalVarNames, node.Name.Value)
+					hasGlobals = true
 				}
 			}
+		case *ast.ProcDeclarationStatement:
+			if node.Name == nil {
+				continue
+			}
+			procASTNodes = append(procASTNodes, node)
+			procName := node.Name.Value
+			procInfo, exists := e.globalScope.Lookup(procName)
+			if exists && procInfo.Type == "proc" {
+				if len(procInfo.ParamNames) > 0 {
+					hasParams = true
+				}
+				// Check AST node's scope for locals vs params
+				if node.LocalScope != nil && len(node.LocalScope.Symbols) > len(procInfo.ParamNames) {
+					hasLocals = true
+				}
+			} else {
+				e.addError("Internal Emitter Error: Proc AST node '%s' found but no matching 'proc' symbol in global scope.", procName)
+			}
+			// default to ignoring other valid top-level statements like Print, ExpressionStatement
 		}
 	}
 
 	// Check if helper variables are needed (flags should be set by analyzeProgram)
 	needsHelpers := e.needsTempInt || e.needsTempString || e.needsReturnInt || e.needsReturnStr
 	needsWorkingStorage := hasGlobals || needsHelpers
-	needsLocalStorage := hasParams
+	needsLocalStorage := hasParams || hasLocals
 
 	if !needsWorkingStorage && !needsLocalStorage {
 		return // Nothing for DATA DIVISION
@@ -603,45 +622,112 @@ func (e *Emitter) emitDataDivision() { // Use symbols.SymbolInfo
 			}
 		}
 
-		for _, procInfo := range procSymbols { // procInfo is symbols.SymbolInfo
-			if len(procInfo.ParamNames) == 0 {
+		for _, procNode := range procASTNodes { // procInfo is symbols.SymbolInfo
+			if procNode.Name == nil {
 				continue
 			}
+			procName := procNode.Name.Value
 
-			// Find proc name for comment (best effort)
-			procNameForComment := "unknown_proc"
-			lookupKey := fmt.Sprintf("%v-%s", procInfo.ParamTypes, procInfo.ReturnType)
-			if name, ok := procNameLookup[lookupKey]; ok {
-				procNameForComment = name
+			procGlobalInfo, exists := e.globalScope.Lookup(procName)
+			if !exists || procGlobalInfo.Type != "proc" {
+				fmt.Println("Proc symbol missing (line 633 in emitter.go)")
+				continue // Skip if symbol missing
 			}
 
-			// Declare parameters for this procedure
-			for i, paramName := range procInfo.ParamNames {
-				cobolName := sanitizeIdentifier(paramName)
-				if _, declared := declaredLocalVars[cobolName]; declared {
-					e.emitComment(fmt.Sprintf("Skipping duplicate LOCAL-STORAGE declaration for '%s' (used in multiple procs?)", cobolName))
-					continue
+			paramNameSet := make(map[string]bool)
+			for _, pName := range procGlobalInfo.ParamNames {
+				paramNameSet[pName] = true
+			}
+
+			hasContentForProc := false // Track if we print the comment header for this proc
+
+			if len(procGlobalInfo.ParamNames) > 0 {
+				if !hasContentForProc {
+					e.emitComment(fmt.Sprintf("Parameters & Locals for procedure '%s'", procName))
+					hasContentForProc = true
 				}
 
-				paramType := procInfo.ParamTypes[i]
-				paramWidth := procInfo.ParamWidths[i]
+				for i, paramName := range procGlobalInfo.ParamNames {
+					cobolName := sanitizeIdentifier(paramName)
+					if _, declared := e.declaredVars[cobolName]; declared {
+						continue
+					}
 
-				picClause := ""
-				switch paramType {
-				case "string":
-					picClause = fmt.Sprintf("01 %s PIC X(%d)", cobolName, paramWidth)
-				case "int":
-					picClause = fmt.Sprintf("01 %s PIC 9(%d)", cobolName, paramWidth)
-				default:
-					continue
+					paramType := procGlobalInfo.ParamTypes[i]
+					paramWidth := procGlobalInfo.ParamWidths[i]
+					if paramWidth <= 0 {
+						continue
+					}
+
+					picClause := ""
+					switch paramType {
+					case "string":
+						picClause = fmt.Sprintf("01 %s PIC X(%d)", cobolName, paramWidth)
+					case "int":
+						picClause = fmt.Sprintf("01 %s PIC 9(%d)", cobolName, paramWidth)
+					default:
+						continue
+					}
+
+					e.builder.WriteString(areaAIndent + picClause + ".\n")
+					e.declaredVars[cobolName] = true // Mark declared in combined map
+				}
+			}
+
+			// Declare local variables for this procedure (using AST LocalScope)
+			if procNode.LocalScope != nil {
+				localSymbolsToDeclare := map[string]symbols.SymbolInfo{}
+				for symbolName, symbolInfo := range procNode.LocalScope.Symbols {
+					if _, isParam := paramNameSet[symbolName]; !isParam {
+						localSymbolsToDeclare[symbolName] = symbolInfo
+					}
 				}
 
-				e.builder.WriteString(areaAIndent + picClause + ".\n")
-				e.emitComment(fmt.Sprintf("Parameter '%s' for procedure %s", paramName, procNameForComment))
-				declaredLocalVars[cobolName] = true
+				if len(localSymbolsToDeclare) > 0 {
+					if !hasContentForProc {
+						e.emitComment(fmt.Sprintf("Parameters & Locals for procedure '%s'", procName))
+						hasContentForProc = true
+					}
+
+					localVarNames := make([]string, 0, len(localSymbolsToDeclare))
+					for name := range localSymbolsToDeclare {
+						localVarNames = append(localVarNames, name)
+					}
+					sort.Strings(localVarNames) // Deterministic output
+
+					for _, localVarName := range localVarNames {
+						localInfo := localSymbolsToDeclare[localVarName]
+						cobolName := sanitizeIdentifier(localVarName)
+
+						if _, declared := e.declaredVars[cobolName]; declared {
+							continue // Skip if already declared (e.g. global)
+						}
+
+						width := localInfo.Width
+						if width <= 0 {
+							continue
+						}
+
+						picClause := ""
+						switch localInfo.Type {
+						case "string":
+							picClause = fmt.Sprintf("01 %s PIC X(%d)", cobolName, localInfo.Width)
+						case "int":
+							picClause = fmt.Sprintf("01 %s PIC 9(%d)", cobolName, localInfo.Width)
+						default:
+							continue
+						}
+
+						e.builder.WriteString(areaAIndent + picClause + ".\n")
+						e.declaredVars[cobolName] = true // Mark declared in combined map
+					}
+				}
+			}
+
+			if hasContentForProc {
+				e.builder.WriteString("\n") // Newline after LOCAL-STORAGE
 			}
 		}
-		e.builder.WriteString("\n") // Newline after LOCAL-STORAGE
 	}
 }
 

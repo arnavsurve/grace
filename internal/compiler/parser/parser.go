@@ -675,13 +675,13 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 	if !exists || procInfoPtr.Type != "proc" {
 		// This implies Pass 1 failed or logic error
 		p.addSemanticError(stmt.Name.Token, "Internal Error: Procedure '%s' signature not found during Pass 2", procName)
-		procInfoPtr = &symbols.SymbolInfo{Type: "unknown"} // Placeholder
 	} else {
 		stmt.Name.Symbol = procInfoPtr // Mark valid proc
 	}
 
 	// Enter new scope
 	p.pushScope()
+	stmt.LocalScope = p.currentScope
 	defer p.popScope()
 
 	// Parse Parameter List `(...)` again for AST and local scope definition
@@ -732,6 +732,12 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 		p.currentProcName = previousProcName
 		return nil
 	}
+	if procInfoPtr != nil && procInfoPtr.ReturnType == returnTypeNode.Name && procInfoPtr.ReturnWidth != returnTypeNode.Width {
+		p.addError(returnTypeNode.Token, "Internal Parser Error: Return width mismatch between Pass 1 (%d) and Pass 2 (%d) for '%s'", procInfoPtr.ReturnWidth, returnTypeNode.Width, procName)
+		p.currentProcName = previousProcName
+		return nil
+	}
+
 	stmt.ReturnType = returnTypeNode
 	// curTok should be '{'
 
@@ -794,11 +800,11 @@ func (p *Parser) parseTypeNode() *ast.TypeNode {
 		Token:  typeTok,
 		Name:   typeName,
 		IsVoid: isVoidType,
-		Width:  0, // Default, will be updated below
+		Width:  0,
 	}
 	p.nextToken() // Consume type name token ('int', 'string', 'void')
 
-	// Parse optional width `(INT)` only if not void
+	// Parse optional width `(int)` only if not void
 	if !node.IsVoid && p.curTok.Type == token.TokenLParen {
 		p.nextToken() // Consume '('
 		if p.curTok.Type != token.TokenInt {
@@ -830,12 +836,11 @@ func (p *Parser) parseTypeNode() *ast.TypeNode {
 		}
 		p.nextToken() // Consume ')'
 	} else if !node.IsVoid && node.Width == 0 {
-		// If not void and width wasn't explicitly set (or was invalidly set to 0), assign default width
+		// If not void and width wasn't explicitly set (or was set to 0 which indicates invalid), assign default width
 		defaultWidth := lib.GetDefaultWidth(typeName)
 		if defaultWidth == 0 {
 			// This should only happen for unknown types, which already errored. Safety check.
 			p.addError(typeTok, "Internal Error: Could not determine default width for known type '%s'", typeName)
-			// Mark width as 0 or 1? Let's use 0 to indicate error.
 			node.Width = 0
 		} else {
 			node.Width = defaultWidth
@@ -947,7 +952,6 @@ func (p *Parser) parseSingleParameter() (*ast.Parameter, error) {
 	}
 	if typeNode.IsVoid {
 		p.addError(typeNode.Token, "Parameter '%s' cannot have type 'void'", ident.Value)
-		// Mark as error but return node for potential partial AST usefulness? Or nil? Let's return nil.
 		return nil, fmt.Errorf("parameter cannot be void")
 	}
 	// Check if width was explicitly provided (it's mandatory for params)
