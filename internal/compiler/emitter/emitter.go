@@ -820,54 +820,60 @@ func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, er
 	}
 }
 
+// internal/compiler/emitter/emitter.go
+
 func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expression) error {
-	sourceEntity, isLiteral, err := e.emitExpressionForResult(rhsExpr)
-	if err != nil {
-		return err
-	}
-	if sourceEntity == "" {
-		return fmt.Errorf("invalid RHS expression for assignment")
-	}
-
-	if !isLiteral && sourceEntity == targetVarCobolName { // Self-assignment x = x
-		e.emitComment(fmt.Sprintf("Assignment of %s to itself - no MOVE generated", targetVarCobolName))
-		return nil
-	}
-
-	// Check if RHS was originally a binary expression that wasn't folded
-	// If so, emit COMPUTE/STRING directly into target instead of via temp var.
+	// Check if RHS is a binary expression that wasn't folded
 	actualRhsExpr := rhsExpr
 	if grp, ok := rhsExpr.(*ast.GroupedExpression); ok {
 		actualRhsExpr = grp.Expression
 	}
 
 	if binExpr, ok := actualRhsExpr.(*ast.BinaryExpression); ok {
+		// Check if it's NOT constant folded (i.e., needs runtime compute/string)
 		if !isConstantFoldedInt(binExpr) && !isConstantFoldedString(binExpr) {
-			if binExpr.ResultType() == "int" {
+			resultType := binExpr.ResultType()
+
+			if resultType == "int" {
 				computeStr, err := e.emitExpressionForCompute(binExpr)
 				if err != nil {
 					return err
 				}
 				e.emitB(fmt.Sprintf("COMPUTE %s = %s", targetVarCobolName, computeStr))
-				return nil
-			} else if binExpr.ResultType() == "string" {
+				return nil // <<<< THE CRITICAL RETURN
+			} else if resultType == "string" {
 				err := e.emitStringConcatenation(targetVarCobolName, binExpr) // Directly into target
-				return err
+				return err                                                    // Return result of emitStringConcatenation (which might be nil error)
 			}
-			// If type is unknown, fall through (error should exist)
+			// If type is unknown, fall through (error should exist from parser/type check)
+		} else {
 		}
 	}
 
-	// Default: MOVE the result (literal, var, temp-var, return-var)
+	// --- Fallback: Evaluate RHS and MOVE ---
+	sourceEntity, isLiteral, err := e.emitExpressionForResult(rhsExpr)
+	if err != nil {
+		return err
+	}
+	if sourceEntity == "" {
+		return fmt.Errorf("internal emitter error: invalid RHS expression for assignment to %s", targetVarCobolName)
+	}
+
+	// Self-assignment check
+	if !isLiteral && sourceEntity == targetVarCobolName {
+		e.emitComment(fmt.Sprintf("Assignment of %s to itself - no MOVE generated", targetVarCobolName))
+		return nil
+	}
+
+	// Type check (already done in parser mostly, but good safeguard)
 	rhsType := rhsExpr.ResultType()
 	if rhsType == "void" {
 		err = fmt.Errorf("cannot assign void result to %s", targetVarCobolName)
 		e.addError("Emitter Error: %v", err)
 		return err
 	}
-	if rhsType == "unknown" { /* Allow if parser allowed, error should exist */
-	}
-	// Assume MOVE works for int/string/unknown that passed parser
+
+	// Default: MOVE the result (literal, var, temp-var, return-var)
 	e.emitB(fmt.Sprintf(`MOVE %s TO %s`, sourceEntity, targetVarCobolName))
 	return nil
 }
@@ -1012,19 +1018,18 @@ func (e *Emitter) emitBlockStatement(block *ast.BlockStatement) {
 }
 
 // emitReturnStatement handles return [expression] specifically
-func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) { // Added procCtx
+func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) {
 	if stmt == nil {
 		e.addError("Internal Emitter Error: Invalid return statement node")
 		return
 	}
 
+	// --- Get Procedure Return Info from Emitter State ---
 	if e.currentProcInfo == nil {
-		// This means return is outside a proc (parser should catch, defensive check)
 		e.addError("Internal Emitter Error: emitReturnStatement called with nil currentProcInfo.")
 		return
 	}
 	procInfo := *e.currentProcInfo
-
 	expectedReturnType := procInfo.ReturnType
 	exprToReturn := stmt.ReturnValue
 
@@ -1032,15 +1037,27 @@ func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) { // Added proc
 	if expectedReturnType == "void" {
 		if exprToReturn != nil {
 			e.addError("Emitter Warning: Return in void procedure has value; ignoring.")
-			// Optionally add semantic error from parser if stricter:
-			// e.addError("Semantic Error: Cannot return a value from void procedure.")
 		}
-		return
+		return // EXIT SECTION handles control flow.
 	}
 
 	// --- Handle Non-Void Return ---
 	if exprToReturn == nil {
 		e.addError("Emitter Error: Missing return value for non-void procedure expecting %s", expectedReturnType)
+		return
+	}
+
+	// --- Type Check (Sanity check) ---
+	actualReturnType := exprToReturn.ResultType()
+	if actualReturnType != "unknown" && actualReturnType != "void" && actualReturnType != expectedReturnType {
+		e.addError(fmt.Sprintf("Emitter Type Error: Cannot return value of type '%s' from procedure expecting '%s'", actualReturnType, expectedReturnType))
+		return
+	}
+	if actualReturnType == "unknown" {
+		e.addError("Emitter Warning: Cannot verify return type for expression yielding 'unknown'.")
+	}
+	if actualReturnType == "void" {
+		e.addError("Emitter Error: Attempting to return result of void expression/call.")
 		return
 	}
 
@@ -1060,95 +1077,18 @@ func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) { // Added proc
 			return
 		}
 	default:
-		// This case should ideally be unreachable if parser validated return types
-		// and the void case is handled above.
-		e.addError("Internal Emitter Error: Unsupported or invalid expected return type '%s'", expectedReturnType)
+		e.addError("Internal Emitter Error: Unsupported expected return type '%s'", expectedReturnType)
 		return
 	}
 
-	// --- Type Check: Returned expression vs Expected Type ---
-	actualReturnType := exprToReturn.ResultType()
-	if actualReturnType != "unknown" && actualReturnType != expectedReturnType {
-		e.addError(fmt.Sprintf("Emitter Type Error: Cannot return value of type '%s' from procedure expecting '%s'", actualReturnType, expectedReturnType))
+	// --- Emit Assignment to Return Var using the general function ---
+	fmt.Printf(">>> emitReturnStatement calling emitAssignment(target=%s, rhsType=%T)\n", targetReturnVar, exprToReturn) // DEBUG
+	err := e.emitAssignment(targetReturnVar, exprToReturn)
+	if err != nil {
+		fmt.Printf("<<< emitReturnStatement received error from emitAssignment: %v\n", err) // DEBUG
 		return
 	}
-	if actualReturnType == "unknown" {
-		e.addError("Emitter Warning: Cannot verify return type for expression yielding 'unknown'.")
-		// Continue emission, assuming parser allowed it for a reason.
-	}
-	if actualReturnType == "void" {
-		e.addError("Emitter Error: Attempting to return result of void expression/call.")
-		return
-	}
-
-	// --- Emit Specific Logic Based on Return Expression Type ---
-	switch node := exprToReturn.(type) {
-	case *ast.IntegerLiteral:
-		e.emitB(fmt.Sprintf("MOVE %d TO %s", node.Value, targetReturnVar))
-	case *ast.StringLiteral:
-		escapedValue := strings.ReplaceAll(node.Value, `"`, `""`)
-		e.emitB(fmt.Sprintf(`MOVE "%s" TO %s`, escapedValue, targetReturnVar))
-	case *ast.Identifier:
-		if node.Symbol == nil {
-			e.addError("Internal Emitter Error: Identifier '%s' in return has no symbol info", node.Value)
-			return
-		}
-		if node.Symbol.Type == "proc" {
-			e.addError("Emitter Error: Cannot return procedure '%s'", node.Value)
-			return
-		}
-		sourceCobolName := sanitizeIdentifier(node.Value)
-		e.emitB(fmt.Sprintf("MOVE %s TO %s", sourceCobolName, targetReturnVar))
-	case *ast.BinaryExpression:
-		// Generate COMPUTE or STRING directly into the target return variable
-		if node.ResultType() == "int" && targetReturnVar == returnIntVarName {
-			computeStr, err := e.emitExpressionForCompute(node) // Gets "GRACE-A + GRACE-B" etc.
-			if err != nil {
-				return
-			}
-			e.emitB(fmt.Sprintf("COMPUTE %s = %s", targetReturnVar, computeStr)) // <<< Correct single compute
-		} else if node.ResultType() == "string" && targetReturnVar == returnStringVarName {
-			err := e.emitStringConcatenation(targetReturnVar, node) // Directly into GRACE-RETURN-STR
-			if err != nil {
-				return
-			}
-		} else {
-			e.addError("Internal Emitter Error: Unexpected binary expression type '%s' in return", node.ResultType())
-		}
-	case *ast.ProcCallExpression:
-		// Check type match before calling
-		if node.ResolvedReturnType != expectedReturnType {
-			e.addError(fmt.Sprintf("Emitter Type Error: Cannot return result of proc call '%s' (type %s) from procedure expecting '%s'", node.Function.Value, node.ResolvedReturnType, expectedReturnType))
-			return
-		}
-		// Evaluate the call first (populates GRACE-RETURN-*)
-		callResultVar, err := e.emitProcCallAndGetResultVar(node)
-		if err != nil {
-			return
-		}
-		// If the target is the SAME return var, the PERFORM already did the work
-		if callResultVar != targetReturnVar {
-			e.emitB(fmt.Sprintf("MOVE %s TO %s", callResultVar, targetReturnVar))
-		} else {
-			e.emitComment(fmt.Sprintf("Result already in %s from PERFORM", targetReturnVar))
-		}
-
-	default:
-		// Fallback for other complex expressions (Grouped, etc.)
-		sourceEntity, _, err := e.emitExpressionForResult(exprToReturn) // This might use temp var
-		if err != nil {
-			return
-		}
-		if sourceEntity == "" {
-			e.addError("Internal Emitter Error: Fallback evaluation for return yielded empty source")
-			return
-		}
-		if sourceEntity != targetReturnVar {
-			e.emitB(fmt.Sprintf("MOVE %s TO %s", sourceEntity, targetReturnVar))
-		} else {
-			e.emitComment(fmt.Sprintf("Result already computed into %s", targetReturnVar))
-		}
-	}
+	fmt.Printf("<<< emitReturnStatement finished call to emitAssignment\n") // DEBUG
 }
 
 func (e *Emitter) emitExpressionStatement(stmt *ast.ExpressionStatement) {
