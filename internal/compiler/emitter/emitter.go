@@ -440,9 +440,7 @@ func (e *Emitter) Emit(program *ast.Program, nameWithoutExt string) string {
 				e.emitStatement(procDecl)
 			}
 		}
-		e.builder.WriteString("\n" + areaAIndent + "END DECLARATIVES.\n\n")
-	} else {
-		e.builder.WriteString("\n")
+		e.builder.WriteString(areaAIndent + "END DECLARATIVES.\n\n")
 	}
 
 	e.builder.WriteString(areaAIndent + "MAIN SECTION.\n")
