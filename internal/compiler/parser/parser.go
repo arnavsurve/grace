@@ -775,12 +775,11 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 	return stmt
 }
 
-// parseTypeNode parses a type specification: `type` or `type(width)` or `void`
+// parseTypeNode parses a type specification: `type(width)` or `void`
 // Used for explicit variable types, parameters, and return types.
 // Expects curTok to be the type name (IDENT or VOID). Consumes tokens through type spec.
 // Returns the TypeNode or nil on error.
-// IMPORTANT: If type is 'int' or 'string' and width is not specified,
-// it assigns the default width to the TypeNode.
+// IMPORTANT: If type is non void and width is not specified, we throw a semantic error
 func (p *Parser) parseTypeNode() *ast.TypeNode {
 	// Expect 'int', 'string', or 'void'
 	isKnownTypeLiteral := p.curTok.Type == token.TokenTypeLiteral && (p.curTok.Literal == "int" || p.curTok.Literal == "string")
@@ -813,7 +812,7 @@ func (p *Parser) parseTypeNode() *ast.TypeNode {
 			if p.curTok.Type != token.TokenRParen && p.curTok.Type != token.TokenEOF {
 				p.nextToken()
 			}
-			// If we now see ')', consume it.
+			// If we now see ')', consume it
 			if p.curTok.Type == token.TokenRParen {
 				p.nextToken()
 			}
@@ -836,17 +835,11 @@ func (p *Parser) parseTypeNode() *ast.TypeNode {
 		}
 		p.nextToken() // Consume ')'
 	} else if !node.IsVoid && node.Width == 0 {
-		// If not void and width wasn't explicitly set (or was set to 0 which indicates invalid), assign default width
-		defaultWidth := lib.GetDefaultWidth(typeName)
-		if defaultWidth == 0 {
-			// This should only happen for unknown types, which already errored. Safety check.
-			p.addError(typeTok, "Internal Error: Could not determine default width for known type '%s'", typeName)
-			node.Width = 0
-		} else {
-			node.Width = defaultWidth
-		}
+		// Enforce explicit width. If it's not void and width is still 0, it means no valid positive width was parsed via returnType(int).
+		p.addError(typeTok, "Explicit positive width specification (e.g. int(10), string(30)) is required for non-void type '%s'", typeName)
+		return nil // Type node is invalid
 	}
-	// If void, width remains 0.
+	// If void, width is 0 (which is valid for void).
 	// If width was validly parsed, node.Width has the explicit value.
 
 	// curTok is now the token *after* the type specification (e.g., '=', '{', ',', ')')
@@ -961,7 +954,7 @@ func (p *Parser) parseSingleParameter() (*ast.Parameter, error) {
 		// WidthToken check is more precise if parseTypeNode preserves it correctly
 		widthMissing := typeNode.WidthToken.Type != token.TokenInt
 		if widthMissing {
-			p.addError(typeNode.Token, "Explicit width specification (e.g., 'int(10)', 'string(30)') is required for parameter '%s'", ident.Value)
+			p.addError(typeNode.Token, "Explicit width specification (e.g. int(10), string(30)) is required for parameter '%s'", ident.Value)
 		} else {
 			// Width was provided but was invalid (e.g., "(0)", "(-5)") - parseTypeNode should have errored
 			// Add a safety error here if needed.
@@ -972,8 +965,6 @@ func (p *Parser) parseSingleParameter() (*ast.Parameter, error) {
 		// Enforce the rule: no valid width means error.
 		return nil, fmt.Errorf("missing or invalid mandatory width for parameter")
 	}
-
-	// TODO: Add parameter to current scope's symbol table when scopes are implemented
 
 	return &ast.Parameter{Name: ident, TypeNode: typeNode}, nil
 }
