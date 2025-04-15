@@ -5,8 +5,8 @@
 Grace is a compiler, runtime model, and systems programming language for writing
 COBOL-based services that bridge mainframes with the modern world.
 
-It compiles to modern, readable COBOL, allowing you to write high-level programs
-that interact with fixed-width files, VSAM records, CSVs, JSON, SQL, and cloud
+It compiles to modern, readable COBOL, allowing you to write high-level, functional
+code that interact with fixed-width files, VSAM records, CSVs, JSON, SQL, and cloud
 services.
 
 Designed for simplicity, structure, and self-evident programs, Grace brings a
