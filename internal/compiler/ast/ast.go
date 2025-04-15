@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/arnavsurve/grace/internal/compiler/lib"
+	"github.com/arnavsurve/grace/internal/compiler/scope"
+	"github.com/arnavsurve/grace/internal/compiler/symbols"
 	"github.com/arnavsurve/grace/internal/compiler/token"
 )
 
@@ -29,23 +31,11 @@ type Expression interface {
 }
 
 // --- Symbol Info ---
-type SymbolInfo struct {
-	Type    string // string, int, bool, proc, unknown, undeclared etc
-	Width   int
-	IsConst bool
-
-	// --- Proc specific info ---
-	ParamNames  []string
-	ParamTypes  []string
-	ParamWidths []int
-	ReturnType  string
-	ReturnWidth int
-}
 
 // --- Program ---
 type Program struct {
 	Statements  []Statement
-	SymbolTable map[string]SymbolInfo
+	GlobalScope *scope.Scope
 }
 
 func (p *Program) TokenLiteral() string {
@@ -287,16 +277,30 @@ func (es *ExpressionStatement) String() string {
 
 // Identifier -> varName
 type Identifier struct {
-	Token        token.Token // IDENT
-	Value        string
-	Width        int
-	ResolvedType string // Store the resolved type during parsing/semantic analysis
+	Token token.Token // IDENT
+	Value string
+	// Annotate identifier with symbol info during parsing/semantic analysis so the
+	// emitter doesn't have to traverse that shit and I don't have to implement that shit.
+	Symbol *symbols.SymbolInfo
 }
 
-func (i *Identifier) expressionNode()       {}
-func (i *Identifier) TokenLiteral() string  { return i.Token.Literal }
-func (i *Identifier) ResultType() string    { return i.ResolvedType }
-func (i *Identifier) ResultWidth() int      { return i.Width }
+func (i *Identifier) expressionNode()      {}
+func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
+
+func (i *Identifier) ResultType() string {
+	if i.Symbol != nil {
+		return i.Symbol.Type
+	}
+	return "unknown" // Should not happen if parser catches undeclared
+}
+
+func (i *Identifier) ResultWidth() int {
+	if i.Symbol != nil {
+		return i.Symbol.Width
+	}
+	return 0
+}
+
 func (i *Identifier) String() string        { return i.Value }
 func (i *Identifier) GetToken() token.Token { return i.Token }
 
@@ -510,9 +514,11 @@ func (ge *GroupedExpression) GetToken() token.Token { return ge.Token }
 
 // ProcCallExpression represents 'funcName(arg1, arg2)'
 type ProcCallExpression struct {
-	Token               token.Token  // The function name token
-	Function            *Identifier  // The identifier for the function
-	Arguments           []Expression // List of argument expressions
+	Token     token.Token  // The function name token
+	Function  *Identifier  // The identifier for the function
+	Arguments []Expression // List of argument expressions
+
+	// These are set by parser using Function.symbol
 	ResolvedReturnType  string
 	ResolvedReturnWidth int
 }
@@ -596,7 +602,11 @@ func PrintAST(node Node, indent string) {
 		}
 
 	case *Identifier:
-		fmt.Println(indent+"Identifier:", n.Value)
+		symbolType := "nil"
+		if n.Symbol != nil {
+			symbolType = n.Symbol.Type
+		}
+		fmt.Printf("%sIdentifier: %s (Symbol Type: %s)\n", indent, n.Value, symbolType)
 
 	case *StringLiteral:
 		fmt.Println(indent+"StringLiteral:", fmt.Sprintf("%q", n.Value))

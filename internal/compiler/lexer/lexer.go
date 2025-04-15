@@ -13,9 +13,18 @@ type Lexer struct {
 }
 
 func NewLexer(input string) *Lexer {
-	l := &Lexer{input: input, line: 1, column: 1}
+	l := &Lexer{input: input, line: 1, column: 0}
 	l.readChar()
 	return l
+}
+
+func (l *Lexer) ResetPosition() {
+	l.position = 0
+	l.readPosition = 0
+	l.line = 1
+	l.column = 0 // readChar increments this to 1, so start at 0
+	l.ch = 0
+	l.readChar() // Read the first character
 }
 
 // readChar advances the lexer's position and updates the current character
@@ -27,15 +36,15 @@ func (l *Lexer) readChar() {
 		l.ch = l.input[l.readPosition]
 	}
 
-	if l.ch == '\n' {
-		l.line++
-		l.column = 0
-	} else {
-		l.column++
-	}
-
 	l.position = l.readPosition
 	l.readPosition++
+
+	if l.ch == '\n' {
+		l.line++
+		l.column = 1
+	} else if l.ch != 0 {
+		l.column++
+	}
 }
 
 // Returns the next character without consuming it
