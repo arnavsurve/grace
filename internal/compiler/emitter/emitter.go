@@ -29,24 +29,20 @@ const (
 	cobolContinuationCol = 7         // Hyphen position for continuation
 	continuationPrefix   = "      -" // 6 spaces + hyphen
 
-	// Names for dedicated return value vars
-	returnIntVarName    = "GRACE-RETURN-INT"
-	returnStringVarName = "GRACE-RETURN-STR"
-	// Widths for return vars
-	returnDefaultIntWidth    = 18
-	returnDefaultStringWidth = 256
+	// Prefix for generated return variables
+	returnVarPrefix = "RET-" // e.g. GRACE-RET-PROCNAME
 )
 
 type Emitter struct {
-	builder         strings.Builder
-	errors          []string
-	needsTempInt    bool
-	needsTempString bool
-	needsReturnInt  bool
-	needsReturnStr  bool
-	declaredVars    map[string]bool // Tracks COBOL var names declared in WORKING-STORAGE
-	globalScope     *scope.Scope
-	currentProcInfo *symbols.SymbolInfo
+	builder                 strings.Builder
+	errors                  []string
+	needsTempInt            bool
+	needsTempString         bool
+	declaredVars            map[string]bool // Tracks COBOL var names declared in WORKING-STORAGE
+	globalScope             *scope.Scope
+	currentProcInfo         *symbols.SymbolInfo
+	currentEmittingProcName string
+	currentLocalScope       *scope.Scope // Local scope for lookups
 }
 
 func NewEmitter() *Emitter {
@@ -292,7 +288,7 @@ func (e *Emitter) emitB(line string) {
 	}
 
 	// Check length before writing (basic safety for non-handled lines)
-	if len(areaBIndent+finalLine) > cobolLineEndCol {
+	if !strings.Contains(finalLine, "\n") && len(areaBIndent+finalLine) > cobolLineEndCol {
 		e.addError("Emitter Warning: Generated COBOL line may exceed %d columns: %s", cobolLineEndCol, areaBIndent+finalLine)
 	}
 
@@ -309,25 +305,9 @@ func (e *Emitter) emitComment(comment string) {
 func (e *Emitter) analyzeProgram(program *ast.Program) {
 	e.needsTempInt = false
 	e.needsTempString = false
-	e.needsReturnInt = false
-	e.needsReturnStr = false
 
 	if e.globalScope == nil {
-		e.addError("Internal Emitter Error: GlobalScope map is nil during analysis phase.")
 		return
-	}
-
-	if e.globalScope.Symbols != nil {
-		for _, info := range e.globalScope.Symbols {
-			if info.Type == "proc" {
-				if info.ReturnType == "int" {
-					e.needsReturnInt = true
-				}
-				if info.ReturnType == "string" {
-					e.needsReturnStr = true
-				}
-			}
-		}
 	}
 
 	// Traverse AST to check for complex operations needing temps
@@ -404,6 +384,21 @@ func isConstantFoldedString(be *ast.BinaryExpression) bool {
 	return leftIsLit && be.Operator == ""
 }
 
+// Helper to determine the correct COBOL variable name based on current scope context
+func (e *Emitter) getScopedCobolName(identifierName string) string {
+	if e.currentLocalScope != nil {
+		_, existsInLocal := e.currentLocalScope.LookupCurrentScope(identifierName)
+		if existsInLocal && e.currentEmittingProcName != "" {
+			// Param or local var of the current proc
+			prefixedName := e.currentEmittingProcName + "-" + identifierName
+			return sanitizeIdentifier(prefixedName) // GRACE-PROCNAME-VARNAME
+		}
+	}
+
+	// If not in local scope or not currently emitting a proc, assume global
+	return sanitizeIdentifier(identifierName)
+}
+
 // --- Main Emit Function ---
 
 func (e *Emitter) Emit(program *ast.Program, nameWithoutExt string) string {
@@ -478,6 +473,7 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 	hasGlobals := false
 	hasParams := false
 	hasLocals := false
+	hasProcReturns := false
 
 	for _, stmt := range programStatements {
 		switch node := stmt.(type) {
@@ -504,6 +500,9 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 				if node.LocalScope != nil && len(node.LocalScope.Symbols) > len(procInfo.ParamNames) {
 					hasLocals = true
 				}
+				if procInfo.ReturnType != "void" {
+					hasProcReturns = true
+				}
 			} else {
 				e.addError("Internal Emitter Error: Proc AST node '%s' found but no matching 'proc' symbol in global scope.", procName)
 			}
@@ -512,8 +511,8 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 	}
 
 	// Check if helper variables are needed (flags should be set by analyzeProgram)
-	needsHelpers := e.needsTempInt || e.needsTempString || e.needsReturnInt || e.needsReturnStr
-	needsWorkingStorage := hasGlobals || needsHelpers
+	needsHelpers := e.needsTempInt || e.needsTempString
+	needsWorkingStorage := hasGlobals || needsHelpers || hasProcReturns
 	needsLocalStorage := hasParams || hasLocals
 
 	if !needsWorkingStorage && !needsLocalStorage {
@@ -530,8 +529,7 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 		for _, varName := range globalVarNames {
 			info, infoExists := e.globalScope.Symbols[varName]
 			if !infoExists {
-				// Shouldn't happen if globalVarNames is built correctly which it is
-				// because I need it to be because I am at my wit's end 💯
+				// Shouldn't happen if globalVarNames is built correctly
 				continue
 			}
 
@@ -571,7 +569,57 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 			}
 		}
 
-		// Declare Helper Variables
+		if hasProcReturns {
+			e.builder.WriteString("\n")
+			e.emitComment("GRACE Procedure Return Variables")
+			// Sort procs for deterministic output
+			sort.Slice(procASTNodes, func(i, j int) bool {
+				if procASTNodes[i].Name == nil || procASTNodes[j].Name == nil {
+					return false
+				}
+				return procASTNodes[i].Name.Value < procASTNodes[j].Name.Value
+			})
+
+			for _, procNode := range procASTNodes {
+				if procNode.Name == nil {
+					continue
+				}
+				procName := procNode.Name.Value
+
+				procInfo, exists := e.globalScope.Lookup(procName)
+				if !exists || procInfo.Type != "proc" || procInfo.ReturnType == "void" {
+					continue // Skip void procedures or those missing symbols
+				}
+
+				retVarName := returnVarPrefix + procName // RET-PROCNAME
+				cobolRetVarName := sanitizeIdentifier(retVarName)
+
+				if _, declared := e.declaredVars[cobolRetVarName]; declared {
+					continue
+				}
+
+				width := procInfo.ReturnWidth
+				if width <= 0 {
+					e.addError("Internal Emitter Error: Proc '%s' has invalid return width %d.", procName, width)
+					continue
+				}
+
+				picClause := ""
+				switch procInfo.ReturnType {
+				case "string":
+					picClause = fmt.Sprintf("01 %s PIC X(%d)", cobolRetVarName, width)
+				case "int":
+					picClause = fmt.Sprintf("01 %s PIC 9(%d)", cobolRetVarName, width)
+				default:
+					continue // Shouldn't happen
+				}
+
+				e.builder.WriteString(areaAIndent + picClause + ".\n")
+				e.declaredVars[cobolRetVarName] = true
+			}
+		}
+
+		// Declare Helper Variables (temps only)
 		if needsHelpers {
 			e.builder.WriteString("\n")
 			e.emitComment("GRACE Compiler Helper Variables")
@@ -589,20 +637,6 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 					e.declaredVars[cobolName] = true
 				}
 			}
-			if e.needsReturnInt {
-				cobolName := returnIntVarName
-				if _, declared := e.declaredVars[cobolName]; !declared {
-					e.builder.WriteString(fmt.Sprintf("%s01 %s PIC 9(%d).\n", areaAIndent, cobolName, returnDefaultIntWidth))
-					e.declaredVars[cobolName] = true
-				}
-			}
-			if e.needsReturnStr {
-				cobolName := returnStringVarName
-				if _, declared := e.declaredVars[cobolName]; !declared {
-					e.builder.WriteString(fmt.Sprintf("%s01 %s PIC X(%d).\n", areaAIndent, cobolName, returnDefaultStringWidth))
-					e.declaredVars[cobolName] = true
-				}
-			}
 		}
 		e.builder.WriteString("\n") // Newline after WORKING-STORAGE
 	}
@@ -610,55 +644,42 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 	// --- LOCAL-STORAGE SECTION ---
 	if needsLocalStorage {
 		e.builder.WriteString(areaAIndent + "LOCAL-STORAGE SECTION." + "\n")
-		// Sort procSymbols (type symbols.SymbolInfo) if desired - requires name access
-		// Simple approach: just iterate the collected symbols
-		procNameLookup := make(map[string]string) // temp map to find proc name for comments
-		if e.globalScope != nil && e.globalScope.Symbols != nil {
-			for name, info := range e.globalScope.Symbols {
-				if info.Type == "proc" {
-					// Create a unique key based on signature? For now, just store name
-					procNameLookup[fmt.Sprintf("%v-%s", info.ParamTypes, info.ReturnType)] = name
-				}
+		sort.Slice(procASTNodes, func(i, j int) bool {
+			if procASTNodes[i].Name == nil || procASTNodes[j].Name == nil {
+				return false
 			}
-		}
-
-		for _, procNode := range procASTNodes { // procInfo is symbols.SymbolInfo
+			return procASTNodes[i].Name.Value < procASTNodes[j].Name.Value
+		})
+		for _, procNode := range procASTNodes {
 			if procNode.Name == nil {
 				continue
 			}
 			procName := procNode.Name.Value
-
 			procGlobalInfo, exists := e.globalScope.Lookup(procName)
 			if !exists || procGlobalInfo.Type != "proc" {
-				fmt.Println("Proc symbol missing (line 633 in emitter.go)")
-				continue // Skip if symbol missing
+				continue
 			}
-
 			paramNameSet := make(map[string]bool)
 			for _, pName := range procGlobalInfo.ParamNames {
 				paramNameSet[pName] = true
 			}
-
-			hasContentForProc := false // Track if we print the comment header for this proc
-
+			hasContentForProc := false
+			// Declare parameters
 			if len(procGlobalInfo.ParamNames) > 0 {
 				if !hasContentForProc {
 					e.emitComment(fmt.Sprintf("Parameters & Locals for procedure '%s'", procName))
 					hasContentForProc = true
 				}
-
 				for i, paramName := range procGlobalInfo.ParamNames {
-					cobolName := sanitizeIdentifier(paramName)
+					cobolName := sanitizeIdentifier(procName + "-" + paramName)
 					if _, declared := e.declaredVars[cobolName]; declared {
 						continue
 					}
-
 					paramType := procGlobalInfo.ParamTypes[i]
 					paramWidth := procGlobalInfo.ParamWidths[i]
 					if paramWidth <= 0 {
 						continue
 					}
-
 					picClause := ""
 					switch paramType {
 					case "string":
@@ -668,13 +689,11 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 					default:
 						continue
 					}
-
 					e.builder.WriteString(areaAIndent + picClause + ".\n")
-					e.declaredVars[cobolName] = true // Mark declared in combined map
+					e.declaredVars[cobolName] = true
 				}
 			}
-
-			// Declare local variables for this procedure (using AST LocalScope)
+			// Declare local variables
 			if procNode.LocalScope != nil {
 				localSymbolsToDeclare := map[string]symbols.SymbolInfo{}
 				for symbolName, symbolInfo := range procNode.LocalScope.Symbols {
@@ -682,50 +701,42 @@ func (e *Emitter) emitDataDivision(programStatements []ast.Statement) {
 						localSymbolsToDeclare[symbolName] = symbolInfo
 					}
 				}
-
 				if len(localSymbolsToDeclare) > 0 {
 					if !hasContentForProc {
 						e.emitComment(fmt.Sprintf("Parameters & Locals for procedure '%s'", procName))
 						hasContentForProc = true
 					}
-
 					localVarNames := make([]string, 0, len(localSymbolsToDeclare))
 					for name := range localSymbolsToDeclare {
 						localVarNames = append(localVarNames, name)
 					}
-					sort.Strings(localVarNames) // Deterministic output
-
+					sort.Strings(localVarNames)
 					for _, localVarName := range localVarNames {
 						localInfo := localSymbolsToDeclare[localVarName]
-						cobolName := sanitizeIdentifier(localVarName)
-
+						cobolName := sanitizeIdentifier(procName + "-" + localVarName)
 						if _, declared := e.declaredVars[cobolName]; declared {
-							continue // Skip if already declared (e.g. global)
+							continue
 						}
-
 						width := localInfo.Width
 						if width <= 0 {
 							continue
 						}
-
 						picClause := ""
 						switch localInfo.Type {
 						case "string":
-							picClause = fmt.Sprintf("01 %s PIC X(%d)", cobolName, localInfo.Width)
+							picClause = fmt.Sprintf("01 %s PIC X(%d)", cobolName, width)
 						case "int":
-							picClause = fmt.Sprintf("01 %s PIC 9(%d)", cobolName, localInfo.Width)
+							picClause = fmt.Sprintf("01 %s PIC 9(%d)", cobolName, width)
 						default:
 							continue
 						}
-
 						e.builder.WriteString(areaAIndent + picClause + ".\n")
-						e.declaredVars[cobolName] = true // Mark declared in combined map
+						e.declaredVars[cobolName] = true
 					}
 				}
 			}
-
 			if hasContentForProc {
-				e.builder.WriteString("\n") // Newline after LOCAL-STORAGE
+				e.builder.WriteString("\n")
 			}
 		}
 	}
@@ -746,9 +757,9 @@ func (e *Emitter) emitStatement(stmt ast.Statement) {
 	case *ast.PrintStatement:
 		e.emitPrint(s)
 	case *ast.DeclarationStatement:
-		e.emitDeclaration(s) // TODO: Will need context when locals are added
+		e.emitDeclaration(s)
 	case *ast.ReassignmentStatement:
-		e.emitReassignment(s) // TODO: Will need context when locals are added
+		e.emitReassignment(s)
 	default:
 		e.addError("Emitter encountered unknown statement type: %T", stmt)
 	}
@@ -759,22 +770,61 @@ func (e *Emitter) emitPrint(stmt *ast.PrintStatement) {
 		e.addError("Emitter Error: Invalid print statement (nil)")
 		return
 	}
-	valueStr, isLiteral, err := e.emitExpressionForResult(stmt.Value)
-	if err != nil {
-		return
-	} // Error handled
-	if valueStr == "" { /* Error handled */
-		return
-	}
 
-	if isLiteral {
-		if strLit, ok := stmt.Value.(*ast.StringLiteral); ok && strLit.Value == "" {
-			e.emitB("DISPLAY SPACE")
+	callExpr, isProcCall := stmt.Value.(*ast.ProcCallExpression)
+	if isProcCall && callExpr.ResultType() != "void" {
+		// Print direct proc call result
+		procName := callExpr.Function.Value
+		procSymInfo := callExpr.Function.Symbol
+		if procSymInfo == nil || procSymInfo.Type != "proc" {
+			e.addError("Internal Error: ")
+		}
+
+		retVarName := returnVarPrefix + procName
+		cobolRetVarName := sanitizeIdentifier(retVarName)
+
+		if _, declared := e.declaredVars[cobolRetVarName]; !declared {
+			e.addError("Internal Emitter Error: Return variable %s for procedure '%s' not declared.", cobolRetVarName, procName)
+			return
+		}
+
+		// Emit argument assignments & PERFORM
+		if len(callExpr.Arguments) != len(procSymInfo.ParamNames) {
+			e.addError("")
+			return
+		}
+
+		for i, argExpr := range callExpr.Arguments {
+			paramGraceName := procSymInfo.ParamNames[i]
+			paramCobolName := sanitizeIdentifier(procName + "-" + paramGraceName)
+			err := e.emitAssignment(paramCobolName, argExpr)
+			if err != nil {
+				e.addError("Internal Emitter Error: ")
+				return
+			}
+		}
+
+		e.emitB(fmt.Sprintf("PERFORM %s", sanitizeIdentifier(procName)))
+		e.emitB(fmt.Sprintf(`DISPLAY %s`, cobolRetVarName))
+
+	} else {
+		valueStr, isLiteral, err := e.emitExpressionForResult(stmt.Value)
+		if err != nil {
+			return
+		} // Error handled
+		if valueStr == "" { /* Error handled */
+			return
+		}
+
+		if isLiteral {
+			if strLit, ok := stmt.Value.(*ast.StringLiteral); ok && strLit.Value == "" {
+				e.emitB("DISPLAY SPACE")
+			} else {
+				e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
+			}
 		} else {
 			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
 		}
-	} else {
-		e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
 	}
 }
 
@@ -783,7 +833,7 @@ func (e *Emitter) emitDeclaration(stmt *ast.DeclarationStatement) {
 		e.addError("Emitter Error: Invalid declaration statement (nil)")
 		return
 	}
-	targetVarCobolName := sanitizeIdentifier(stmt.Name.Value)
+	targetVarCobolName := e.getScopedCobolName(stmt.Name.Value)
 	if _, declared := e.declaredVars[targetVarCobolName]; !declared {
 		// This implies a parser error allowed use before declaration/scope issue,
 		// or the declaration itself failed earlier in emitDataDivision.
@@ -799,12 +849,11 @@ func (e *Emitter) emitReassignment(stmt *ast.ReassignmentStatement) {
 		e.addError("Emitter Error: Invalid reassignment statement (nil)")
 		return
 	}
-	targetVarCobolName := sanitizeIdentifier(stmt.Name.Value)
+	targetVarCobolName := e.getScopedCobolName(stmt.Name.Value)
 	if _, declared := e.declaredVars[targetVarCobolName]; !declared {
 		e.addError("Emitter Warning: Skipping reassignment for '%s' as it was not declared.", targetVarCobolName)
 		return
 	}
-	// TODO: Add check here or in parser: Cannot reassign const variable
 	err := e.emitAssignment(targetVarCobolName, stmt.Value)
 	_ = err // Error handled internally
 }
@@ -829,7 +878,7 @@ func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, er
 			return "", false, err
 		}
 		// The COBOL compiler will resolve whether it is WORKING-STORAGE or LOCAL-STORAGE based on context
-		cobolName := sanitizeIdentifier(node.Value)
+		cobolName := e.getScopedCobolName(node.Value)
 		return cobolName, false, nil
 
 	case *ast.IntegerLiteral:
@@ -892,6 +941,9 @@ func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, er
 		if err != nil {
 			return "", false, err
 		}
+
+		// Should only happen for void calls used as values
+		// Indicates a parser error
 		if resultVar == "" {
 			err = fmt.Errorf("cannot use result of void procedure '%s'", node.Function.Value)
 			e.addError("Emitter Error: %v", err)
@@ -926,7 +978,7 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 					return err
 				}
 				e.emitB(fmt.Sprintf("COMPUTE %s = %s", targetVarCobolName, computeStr))
-				return nil // <<<< THE CRITICAL RETURN
+				return nil
 			} else if resultType == "string" {
 				err := e.emitStringConcatenation(targetVarCobolName, binExpr) // Directly into target
 				return err                                                    // Return result of emitStringConcatenation (which might be nil error)
@@ -985,8 +1037,7 @@ func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) 
 			return "", err
 		}
 
-		// Return the sanitized name. COBOL resolves scope (WORKING-STORAGE vs LOCAL-STORAGE)
-		cobolName := sanitizeIdentifier(node.Value)
+		cobolName := e.getScopedCobolName(node.Value)
 		return cobolName, nil
 
 	case *ast.IntegerLiteral:
@@ -1066,15 +1117,22 @@ func (e *Emitter) emitProcDeclaration(stmt *ast.ProcDeclarationStatement) {
 		return
 	}
 
+	procName := stmt.Name.Value
+
 	// Set context
 	previousProcInfo := e.currentProcInfo
+	previousProcName := e.currentEmittingProcName
+	previousLocalScope := e.currentLocalScope
 	e.currentProcInfo = stmt.Name.Symbol
+	e.currentEmittingProcName = procName
+	e.currentLocalScope = stmt.LocalScope
 	defer func() {
-		e.currentProcInfo = previousProcInfo // Restore context when function exits
+		e.currentProcInfo = previousProcInfo         // Restore context when function exits
+		e.currentEmittingProcName = previousProcName // Restore previous name
+		e.currentLocalScope = previousLocalScope
 	}()
 
 	procCobolName := sanitizeIdentifier(stmt.Name.Value)
-
 	e.builder.WriteString(areaAIndent + procCobolName + " SECTION." + "\n")
 
 	paramStrings := []string{}
@@ -1115,7 +1173,9 @@ func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) {
 		e.addError("Internal Emitter Error: emitReturnStatement called with nil currentProcInfo.")
 		return
 	}
+
 	procInfo := *e.currentProcInfo
+	procName := e.currentEmittingProcName
 	expectedReturnType := procInfo.ReturnType
 	exprToReturn := stmt.ReturnValue
 
@@ -1133,7 +1193,7 @@ func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) {
 		return
 	}
 
-	// --- Type Check (Sanity check) ---
+	// Type check (sanity)
 	actualReturnType := exprToReturn.ResultType()
 	if actualReturnType != "unknown" && actualReturnType != "void" && actualReturnType != expectedReturnType {
 		e.addError(fmt.Sprintf("Emitter Type Error: Cannot return value of type '%s' from procedure expecting '%s'", actualReturnType, expectedReturnType))
@@ -1148,33 +1208,19 @@ func (e *Emitter) emitReturnStatement(stmt *ast.ReturnStatement) {
 	}
 
 	// Determine target COBOL variable based on *expected* type
-	targetReturnVar := ""
-	switch expectedReturnType {
-	case "int":
-		targetReturnVar = returnIntVarName
-		if !e.needsReturnInt {
-			e.addError("Internal Emitter Error: Return int needed but %s not declared", targetReturnVar)
-			return
-		}
-	case "string":
-		targetReturnVar = returnStringVarName
-		if !e.needsReturnStr {
-			e.addError("Internal Emitter Error: Return string needed but %s not declared", targetReturnVar)
-			return
-		}
-	default:
-		e.addError("Internal Emitter Error: Unsupported expected return type '%s'", expectedReturnType)
+	targetReturnVarNameRaw := returnVarPrefix + procName
+	targetReturnVar := sanitizeIdentifier(targetReturnVarNameRaw)
+
+	// Verify the target variable was declared (sanity check)
+	if _, declared := e.declaredVars[targetReturnVar]; !declared {
+		e.addError("Internal Emitter Error: Target return variable %s for procedure '%s' not found in declaredVars.", targetReturnVar, procName)
 		return
 	}
 
-	// --- Emit Assignment to Return Var using the general function ---
-	fmt.Printf(">>> emitReturnStatement calling emitAssignment(target=%s, rhsType=%T)\n", targetReturnVar, exprToReturn) // DEBUG
+	// Emit Assignment to the specific return var
 	err := e.emitAssignment(targetReturnVar, exprToReturn)
-	if err != nil {
-		fmt.Printf("<<< emitReturnStatement received error from emitAssignment: %v\n", err) // DEBUG
-		return
+	if err != nil { /* Error already added by emitAssignment */
 	}
-	fmt.Printf("<<< emitReturnStatement finished call to emitAssignment\n") // DEBUG
 }
 
 func (e *Emitter) emitExpressionStatement(stmt *ast.ExpressionStatement) {
@@ -1196,6 +1242,7 @@ func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ast.ProcCallExpression) 
 		e.addError("Emitter Error: %v", err)
 		return "", err
 	}
+
 	procName := callExpr.Function.Value
 	procCobolName := sanitizeIdentifier(procName)
 	procSymInfo := *callExpr.Function.Symbol
@@ -1212,7 +1259,7 @@ func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ast.ProcCallExpression) 
 			break
 		}
 		paramGraceName := procSymInfo.ParamNames[i]
-		paramCobolName := sanitizeIdentifier(paramGraceName)
+		paramCobolName := sanitizeIdentifier(procName + "-" + paramGraceName)
 
 		// Assign argument value to parameter variable
 		err := e.emitAssignment(paramCobolName, argExpr)
@@ -1227,20 +1274,17 @@ func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ast.ProcCallExpression) 
 
 	// --- 3. Determine Result Variable ---
 	switch procSymInfo.ReturnType {
-	case "int":
-		if !e.needsReturnInt {
-			err := fmt.Errorf("proc '%s' returns int, but %s not declared", procName, returnIntVarName)
-			e.addError("Internal Error: %v", err)
+	case "int", "string":
+		// Construct the specific return variable name
+		retVarNameRaw := returnVarPrefix + procName
+		cobolRetVarName := sanitizeIdentifier(retVarNameRaw)
+		// Verify it was declared (essential check)
+		if _, declared := e.declaredVars[cobolRetVarName]; !declared {
+			err := fmt.Errorf("internal Emitter Error: Return variable %s for procedure '%s' was not declared", cobolRetVarName, procName)
+			e.addError(err.Error())
 			return "", err
 		}
-		return returnIntVarName, nil
-	case "string":
-		if !e.needsReturnStr {
-			err := fmt.Errorf("proc '%s' returns string, but %s not declared", procName, returnStringVarName)
-			e.addError("Internal Error: %v", err)
-			return "", err
-		}
-		return returnStringVarName, nil
+		return cobolRetVarName, nil
 	case "void":
 		return "", nil // No result var
 	case "unknown":
@@ -1256,9 +1300,9 @@ func (e *Emitter) emitProcCallAndGetResultVar(callExpr *ast.ProcCallExpression) 
 
 func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *ast.BinaryExpression) error {
 	operands := []string{}
-	tempVarsNeeded := make(map[string]string) // Should not be needed with current collectStringOperands
+	tempVarsNeeded := make(map[string]string)
 
-	err := e.collectStringOperands(expr, &operands, tempVarsNeeded) // Pass map, though likely unused
+	err := e.collectStringOperands(expr, &operands, tempVarsNeeded)
 	if err != nil {
 		return err
 	}
@@ -1268,23 +1312,33 @@ func (e *Emitter) emitStringConcatenation(targetCobolVar string, expr *ast.Binar
 	}
 
 	// --- Emit intermediate steps (if any were collected - currently none expected) ---
-	for _, stmt := range tempVarsNeeded {
-		e.emitB(stmt)
-	}
+	// for _, stmt := range tempVarsNeeded {
+	// 	e.emitB(stmt)
+	// }
 
 	// --- Emit STRING statement ---
 	e.emitB(fmt.Sprintf(`MOVE SPACES TO %s`, targetCobolVar)) // Initialize target
 
-	var stringStmt strings.Builder
-	stringStmt.WriteString(fmt.Sprintf("STRING %s DELIMITED BY SIZE", operands[0]))
-	for i := 1; i < len(operands); i++ {
-		stringStmt.WriteString("\n")
-		stringStmt.WriteString(fmt.Sprintf("%s       %s DELIMITED BY SIZE", areaBIndent, operands[i]))
-	}
-	stringStmt.WriteString("\n")
-	stringStmt.WriteString(fmt.Sprintf("%s    INTO %s", areaBIndent, targetCobolVar))
+	// First operand line
+	firstLine := fmt.Sprintf("%sSTRING %s DELIMITED BY SIZE", areaBIndent, operands[0])
+	e.builder.WriteString(firstLine)
 
-	e.emitB(stringStmt.String()) // Pass whole block to emitB for final period
+	// Subsequent operand lines
+	operandIndent := areaBIndent + "       " // Indent for subsequent operands
+	for i := 1; i < len(operands); i++ {
+		e.builder.WriteString("\n")
+		operandLine := fmt.Sprintf("%s%s DELIMITED BY SIZE", operandIndent, operands[i])
+		e.builder.WriteString(operandLine)
+	}
+
+	// INTO line
+	intoIndent := areaBIndent + "    " // Indent for INTO clause
+	e.builder.WriteString("\n")
+	intoLine := fmt.Sprintf("%sINTO %s", intoIndent, targetCobolVar)
+	e.builder.WriteString(intoLine)
+
+	// Add final period and newline
+	e.builder.WriteString(".\n")
 
 	return nil
 }
@@ -1317,7 +1371,7 @@ func (e *Emitter) collectStringOperands(expr ast.Expression, operands *[]string,
 			return err
 		}
 
-		cobolName := sanitizeIdentifier(node.Value)
+		cobolName := e.getScopedCobolName(node.Value)
 		*operands = append(*operands, cobolName)
 
 	case *ast.BinaryExpression:
