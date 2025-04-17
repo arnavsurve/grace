@@ -1,7 +1,7 @@
 .PHONY: build test grace run clean
 
 GRACE_BIN=grace
-GRACE_SRC=./cmd/grace
+GRACE_SRC=.
 OUT_DIR=out
 
 # Default: build the grace binary
