@@ -48,12 +48,18 @@ var InitCmd = &cobra.Command{
 
 		fmt.Printf("↪ scaffolding new job %q ...\n", jobName)
 
+		err := os.MkdirAll(filepath.Join(targetDir, "src"), 0755)
+		cobra.CheckErr(err)
+		err = os.MkdirAll(filepath.Join(targetDir, "out"), 0755)
+		cobra.CheckErr(err)
+
 		// Copy each template to destination with template data
 		data := map[string]string{"JobName": jobName}
 
 		files := map[string]string{
-			"templates/hello.grc.tpl": "hello.grc",
+			"templates/hello.grc.tpl": "src/hello.grc",
 			"templates/grace.yml.tpl": "grace.yml",
+			"templates/gitignore.tpl": ".gitignore",
 		}
 
 		for tplPath, outName := range files {
