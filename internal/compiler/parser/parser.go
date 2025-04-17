@@ -124,13 +124,11 @@ func (p *Parser) getSymbolInfo(name string) (symbols.SymbolInfo, bool) {
 
 // -- Scope Management Wrappers ---
 func (p *Parser) pushScope() {
-	fmt.Printf(">>> Pushing scope (outer: %p)\n", p.currentScope) // Debugging
 	p.currentScope = scope.NewScope(p.currentScope, p.currentScope.Name)
 }
 
 func (p *Parser) popScope() {
 	if p.currentScope != nil {
-		fmt.Printf("<<< Popping scope (back to: %p)\n", p.currentScope.Outer) // Debugging
 		p.currentScope = p.currentScope.Outer
 	}
 	// Add check if popScope is called on nil scope (shouldn't happen)
