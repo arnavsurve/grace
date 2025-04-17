@@ -14,3 +14,8 @@ modern developer experience to legacy systems.
 
 > Code is art, and mainframes deserve poetry.
 
+
+## Language Specification
+
+See [docs/grammar.lark](docs/grammar.lark) for the official EBNF grammar of Grace, and
+[docs/parse_grammar.py](docs/parse_grammar.py) for a Python parser/demo harness.
