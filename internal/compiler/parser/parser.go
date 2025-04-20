@@ -1492,57 +1492,58 @@ func (p *Parser) parseReassignmentStatement() ast.Statement {
 
 	// --- Semantic Checks: Type and Width ---
 	if isValidTarget {
-		valueType := valueExpr.ResultType()
+		valueType := valueExpr.ResultType() // e.g., "int", "string", "MyRecordName"
 		valueWidth := valueExpr.ResultWidth()
-		valueRecordSymbol := valueExpr.GetResolvedSymbol() // Get record symbol if RHS resolves to one
 
-		// Check void assignment
+		// --- Revised Type Compatibility Checks ---
 		if valueType == "void" {
 			p.addSemanticError(valueExpr.GetToken(), "Cannot assign result of void expression to '%s'", varName)
 		} else if valueType != "unknown" && targetType != "unknown" {
-			// --- Type Compatibility ---
-			// Check 1: Basic types (int, string) must match exactly
-			isBasicTarget := (targetType == "int" || targetType == "string")
-			isBasicValue := (valueType == "int" || valueType == "string")
-
-			if isBasicTarget && isBasicValue && targetType != valueType {
-				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to variable '%s' of type %s", valueType, varName, targetType)
-			} else if targetRecordSymbol != nil && valueRecordSymbol != nil {
-				// Check 2: Record types must match exactly (by name/symbol pointer)
-				if targetRecordSymbol.Name != valueRecordSymbol.Name { // Compare by original name for error message
-					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record of type %s to variable '%s' of type %s", valueRecordSymbol.Name, varName, targetRecordSymbol.Name)
+			// Check 1: Record Assignment (LHS is known record var)
+			if targetRecordSymbol != nil {
+				rhsResolvedRecordSymbol := valueExpr.GetResolvedSymbol() // Specifically get symbol if RHS is record-resolving expr (like func call)
+				// Check if RHS is *also* a record type (either variable or function call result)
+				if rhsResolvedRecordSymbol != nil && rhsResolvedRecordSymbol.Type == "record" { // Check the *type* of the resolved symbol
+					// Both LHS and RHS are records. Compare their type names.
+					if targetRecordSymbol.Name != rhsResolvedRecordSymbol.Name {
+						p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record of type %s to variable '%s' of type %s", rhsResolvedRecordSymbol.Name, varName, targetRecordSymbol.Name)
+					}
+					// If names match, assignment is valid (MOVE CORRESPONDING)
 				} else {
-					// TODO: Emit MOVE CORRESPONDING for record assignment later
+					// Assigning non-record type (basic type, file handle, proc result etc.) to a record variable
+					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to record variable '%s' of type %s", valueType, varName, targetRecordSymbol.Name)
 				}
-			} else if targetRecordSymbol != nil && valueRecordSymbol == nil {
-				// Check 3: Cannot assign basic type to record var
-				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to record variable '%s' of type %s", valueType, varName, targetRecordSymbol.Name)
-			} else if targetRecordSymbol == nil && valueRecordSymbol != nil {
-				// Check 4: Cannot assign record type to basic var
-				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record of type %s to variable '%s' of type %s", valueRecordSymbol.Name, varName, targetType)
-			}
+				// Check 2: Basic Type Assignment (LHS is int/string)
+			} else if targetType == "int" || targetType == "string" {
+				// Check if RHS is also a compatible basic type
+				if valueType == targetType {
+					// Types match - Check Width Compatibility
+					if valueWidth > 0 && targetWidth > 0 && valueWidth > targetWidth {
+						isLiteralRHS := false
+						if _, ok := valueExpr.(*ast.IntegerLiteral); ok {
+							isLiteralRHS = true
+						}
+						if _, ok := valueExpr.(*ast.StringLiteral); ok {
+							isLiteralRHS = true
+						}
 
-			// --- Width Compatibility (only for basic types) ---
-			if isBasicTarget && isBasicValue && targetType == valueType {
-				if valueWidth > 0 && targetWidth > 0 && valueWidth > targetWidth {
-					isLiteralRHS := false
-					if _, ok := valueExpr.(*ast.IntegerLiteral); ok {
-						isLiteralRHS = true
+						if isLiteralRHS {
+							p.addSemanticError(valueExpr.GetToken(), "Value width %d exceeds variable '%s' width %d", valueWidth, varName, targetWidth)
+						} else {
+							p.addWarning(valueExpr.GetToken(), "Width of assigned value (%d) might exceed variable '%s' width (%d).", valueWidth, varName, targetWidth)
+						}
 					}
-					if _, ok := valueExpr.(*ast.StringLiteral); ok {
-						isLiteralRHS = true
-					}
-
-					if isLiteralRHS {
-						p.addSemanticError(valueExpr.GetToken(), "Value width %d exceeds variable '%s' width %d", valueWidth, varName, targetWidth)
-					} else {
-						p.addWarning(valueExpr.GetToken(), "Width of assigned value (%d) might exceed variable '%s' width (%d).", valueWidth, varName, targetWidth)
-					}
+					// If widths compatible, assignment is valid
+				} else {
+					// Type mismatch (e.g., assigning string to int, or record to int)
+					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to variable '%s' of type %s", valueType, varName, targetType)
 				}
 			}
-		}
-	}
+			// Check 3: File Handle Assignment (already handled above by checking targetSymbol.Type == "file")
+			// Check 4: Assigning to other types? (If more types are added later)
+		} // end if types are known
 
+	} // end if isValidTarget
 	return stmt
 }
 
