@@ -17,6 +17,8 @@ Commands:
   run    Submit a job to Hercules/Hopper
   logs   Tail output logs for a Grace job
 `,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func Execute() error {

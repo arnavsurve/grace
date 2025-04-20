@@ -1318,19 +1318,6 @@ func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) 
 		if errR != nil {
 			return "", errR
 		}
-		// Add parens defensively
-		if _, ok := node.Left.(*ast.BinaryExpression); ok {
-			leftStr = fmt.Sprintf("( %s )", leftStr)
-		}
-		if _, ok := node.Left.(*ast.GroupedExpression); ok {
-			leftStr = fmt.Sprintf("( %s )", leftStr)
-		}
-		if _, ok := node.Right.(*ast.BinaryExpression); ok {
-			rightStr = fmt.Sprintf("( %s )", rightStr)
-		}
-		if _, ok := node.Right.(*ast.GroupedExpression); ok {
-			rightStr = fmt.Sprintf("( %s )", rightStr)
-		}
 		if node.Operator == "/" {
 			if lit, ok := node.Right.(*ast.IntegerLiteral); ok && lit.Value == 0 {
 				e.emitComment("WARNING: Potential division by zero")
@@ -1343,7 +1330,7 @@ func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("( %s )", innerExprStr), nil
+		return fmt.Sprintf("(%s)", innerExprStr), nil
 
 	case *ast.ProcCallExpression:
 		if node.ResolvedReturnType != "int" {
@@ -1356,7 +1343,7 @@ func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		return retVar, nil // Return the name of the var holding the result
+		return retVar, nil
 
 	default:
 		err := fmt.Errorf("unknown expr type %T in arithmetic", expr)
