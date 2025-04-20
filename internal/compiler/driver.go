@@ -57,7 +57,13 @@ func parseProgram(src string) (*ast.Program, error) {
 	p := parser.NewParser(lex)
 	prog := p.ParseProgram()
 	if errs := p.Errors(); len(errs) > 0 {
-		return nil, fmt.Errorf("parser errors: %v", errs)
+		var b strings.Builder
+		for _, err := range errs {
+			b.WriteString(err)
+			b.WriteString("\n")
+		}
+		return nil, fmt.Errorf("parser errors:\n%v", b.String())
+
 	}
 	return prog, nil
 }
