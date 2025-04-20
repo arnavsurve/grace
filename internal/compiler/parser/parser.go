@@ -84,14 +84,12 @@ func (p *Parser) nextToken() {
 func (p *Parser) addError(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	errMsg := fmt.Sprintf("%d:%d: Syntax Error: %s", tok.Line, tok.Column, msg)
-	fmt.Printf(">>> ADDING ERROR: %s (curTok when adding: %+v)\n", errMsg, p.curTok) // <<< ADD
 	p.errors = append(p.errors, errMsg)
 }
 
 func (p *Parser) addSemanticError(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	errMsg := fmt.Sprintf("%d:%d: Semantic Error: %s", tok.Line, tok.Column, msg)
-	fmt.Printf(">>> ADDING SEMANTIC ERROR: %s (curTok when adding: %+v)\n", errMsg, p.curTok) // <<< ADD
 	p.errors = append(p.errors, errMsg)
 }
 
@@ -478,9 +476,20 @@ func (p *Parser) parseProcSignatureForPass1() (symbols.SymbolInfo, error) {
 	}
 	// curTok is now ')'
 
-	if !p.expectPeek(token.TokenColon) { // Consume ')', check ':'
-		p.skipSignatureAndBody()
-		return procInfo, fmt.Errorf("%d:%d: Syntax Error: Expected ':' for return type after '()'", p.curTok.Line, p.curTok.Column)
+	if p.curTok.Type != token.TokenRParen {
+		// This indicates an internal logic error if parseParameterList succeeded
+		p.addError(p.curTok, "Internal parser error: parseParameterList finished on wrong token: %+v", p.curTok)
+		p.skipSignatureAndBody() // Attempt recovery
+		return procInfo, fmt.Errorf("internal error after params")
+	}
+	// Consume the ')' explicitly
+	p.nextToken()
+
+	// Step 2: Check that the current token is now ':'
+	if p.curTok.Type != token.TokenColon {
+		p.addError(p.curTok, "Expected ':' after '()', got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+		p.skipSignatureAndBody() // Attempt recovery
+		return procInfo, fmt.Errorf("expected ':' after '()'")
 	}
 	// curTok is ':'
 	p.nextToken() // Consume ':'
@@ -955,12 +964,16 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 	if !p.expectPeek(token.TokenLParen) {
 		return nil
 	}
+	// curTok is now '('
+
 	// Pass 2: Parse params fully for AST, resolving types (including records)
 	params, _, err := p.parseParameterList() // Pass 2 version needs full type resolution
 	if err != nil {
+		p.skipSignatureAndBody() // Attempt recovery
 		return nil
 	}
 	stmt.Parameters = params
+	// curTok is now ')'
 
 	// Define parameters in the *local* scope
 	for i, param := range stmt.Parameters {
@@ -991,14 +1004,21 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 
 	// --- Parse Return Type `: type` ---
 	if p.curTok.Type != token.TokenRParen {
-		p.addError(p.curTok, "Expected ')'")
+		// This check is mainly defensive, parseParameterList should ensure this
+		p.addError(p.curTok, "Internal parser error: Expected ')' after parameter parsing")
+		p.skipSignatureAndBody()
 		return nil
 	}
-	if !p.expectPeek(token.TokenColon) {
-		p.addError(p.peekTok, "Expected ':' for return type")
+	p.nextToken() // Consume the ')' explicitly.
+
+	// Now curTok should be ':'
+	if p.curTok.Type != token.TokenColon {
+		p.addError(p.curTok, "Expected ':' for return type after '()', got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+		p.skipSignatureAndBody()
 		return nil
 	}
 	p.nextToken() // Consume ':'
+	// Now curTok is the start of the type node ('void')
 
 	// Pass 2: Parse return type fully, resolving records
 	returnTypeNode := p.parseTypeNode()
@@ -1139,7 +1159,6 @@ func (p *Parser) parseParameterList() ([]*ast.Parameter, []string, error) {
 	}
 	if p.peekTok.Type == token.TokenRParen {
 		p.nextToken() // Consume '('
-		p.nextToken() // Consume ')'
 		return params, paramNames, nil
 	}
 	p.nextToken() // Consume '('
