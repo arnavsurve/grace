@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	graceCmd       = "go run ./cmd/grace"
+	graceCmd       = "go run main.go build"
 	compileTimeout = 10 * time.Second // Timeout for the grace compiler itself
 	cobcTimeout    = 10 * time.Second // Timeout for the COBOL compiler
 	runTimeout     = 5 * time.Second  // Timeout for running the compiled binary
