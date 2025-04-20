@@ -70,6 +70,11 @@ func (l *Lexer) NextToken() token.Token {
 			l.readChar()
 			l.readComment()
 			return l.NextToken()
+		} else if l.peekChar() == '*' {
+			// Block comment
+			l.readChar()
+			l.readBlockComment(startLine, startCol)
+			return l.NextToken()
 		} else {
 			// Division
 			tok = token.Token{Type: token.TokenSlash, Literal: string(l.ch), Line: startLine, Column: startCol}
@@ -166,6 +171,24 @@ func (l *Lexer) readComment() {
 	}
 }
 
+func (l *Lexer) readBlockComment(startLine, startCol int) {
+	l.readChar() // Consume the opening '*'
+
+	for {
+		if l.ch == 0 {
+			// Reached EOF before closing block comment
+			// TODO: Add error reporting if desired
+			return
+		}
+		if l.ch == '*' && l.peekChar() == '/' {
+			l.readChar() // Consume '*'
+			l.readChar() // Consume '/'
+			return       // End of block comment
+		}
+		l.readChar() // Consume character inside comment
+	}
+}
+
 func (l *Lexer) readIdentifier() string {
 	start := l.position
 	for isLetter(l.ch) || isDigit(l.ch) {
@@ -221,6 +244,14 @@ var keywords = map[string]token.TokenType{
 	"void":   token.TokenVoid,
 	"int":    token.TokenTypeLiteral,
 	"string": token.TokenTypeLiteral,
+	"record": token.TokenRecord,
+	"file":   token.TokenFileKeyword,
+	"input":  token.TokenInput,
+	"output": token.TokenOutput,
+	"read":   token.TokenRead,
+	"write":  token.TokenWrite,
+	"into":   token.TokenInto,
+	"from":   token.TokenFrom,
 	// Add other type keywords like "bool" here if needed
 }
 

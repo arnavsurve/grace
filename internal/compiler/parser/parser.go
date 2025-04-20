@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/arnavsurve/grace/internal/compiler/ast"
 	"github.com/arnavsurve/grace/internal/compiler/lexer"
@@ -21,7 +20,7 @@ const (
 	PrecSum     // +, -
 	PrecProduct // *, /
 	PrecCall    // function(...)
-	PrecPrimary // Literals, identifiers, (...)
+	PrecPrimary // Literals, identifiers, (...), input(...), output(...)
 )
 
 // Map tokens to precedence levels
@@ -55,6 +54,11 @@ type Parser struct {
 	// Pratt parser fucntions (maps are initialized in initializePratt)
 	prefixParseFns map[token.TokenType]prefixParseFn
 	infixParseFns  map[token.TokenType]infixParseFn
+
+	// Temporary storage for Pass 1 results
+	// Maps identifier name to basic info needed for Pass 2 resolution
+	// Using full SymbolInfo temporarily, but only specific fields are populated in Pass 1
+	pass1Symbols map[string]*symbols.SymbolInfo
 }
 
 func NewParser(l *lexer.Lexer) *Parser {
@@ -65,6 +69,7 @@ func NewParser(l *lexer.Lexer) *Parser {
 		symbolTable:     make(map[string]symbols.SymbolInfo),
 		currentProcName: "",  // Not inside a proc initially
 		currentScope:    nil, // Will be initialized before parsing passes
+		pass1Symbols:    make(map[string]*symbols.SymbolInfo),
 	}
 	return p
 }
@@ -78,12 +83,16 @@ func (p *Parser) nextToken() {
 // --- Error/Warning Handling ---
 func (p *Parser) addError(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	p.errors = append(p.errors, fmt.Sprintf("%d:%d: Syntax Error: %s", tok.Line, tok.Column, msg))
+	errMsg := fmt.Sprintf("%d:%d: Syntax Error: %s", tok.Line, tok.Column, msg)
+	fmt.Printf(">>> ADDING ERROR: %s (curTok when adding: %+v)\n", errMsg, p.curTok) // <<< ADD
+	p.errors = append(p.errors, errMsg)
 }
 
 func (p *Parser) addSemanticError(tok token.Token, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	p.errors = append(p.errors, fmt.Sprintf("%d:%d: Semantic Error: %s", tok.Line, tok.Column, msg))
+	errMsg := fmt.Sprintf("%d:%d: Semantic Error: %s", tok.Line, tok.Column, msg)
+	fmt.Printf(">>> ADDING SEMANTIC ERROR: %s (curTok when adding: %+v)\n", errMsg, p.curTok) // <<< ADD
+	p.errors = append(p.errors, errMsg)
 }
 
 func (p *Parser) addWarning(tok token.Token, format string, args ...any) {
@@ -173,18 +182,19 @@ func (p *Parser) lookupCurrentScopeSymbol(name string) (*symbols.SymbolInfo, boo
 // --- Program Parsing (Two-Pass Orchestration) ---
 
 func (p *Parser) ParseProgram() *ast.Program {
-	// --- Pass 1: Collect Procedure Signatures ---
-	procSignatures, pass1Errs := p.collectProcedureSignatures()
+	// --- Pass 1: Collect Global Declarations (Procs, Records, Files) ---
+	pass1Errs := p.collectGlobalDeclarations()
 	p.errors = append(p.errors, pass1Errs...) // Add any errors from pass 1
 	if len(p.errors) > 0 {
-		// If signature collection failed significantly, don't proceed
+		// Filter out only fatal errors if needed, or just stop if any error.
+		// Let's stop if Pass 1 had errors preventing symbol resolution.
+		fmt.Println("Errors during Pass 1, stopping.") // Debugging
 		return nil
 	}
 
 	// --- Pass 2: Full Parse ---
-	// Initialize/Reset parser state for Pass 2
-	p.l.ResetPosition()
-	p.currentScope = scope.NewScope(nil, "global") // Initialize global scope
+	p.l.ResetPosition()                            // Reset lexer for Pass 2
+	p.currentScope = scope.NewScope(nil, "global") // Initialize global scope for Pass 2
 	p.errors = []string{}                          // Reset errors for Pass 2
 	p.warnings = []string{}                        // Reset warnings for Pass 2
 
@@ -192,45 +202,58 @@ func (p *Parser) ParseProgram() *ast.Program {
 	p.nextToken()
 	p.nextToken()
 
-	// Populate global scope with procedure signatures from Pass 1
-	for name, info := range procSignatures {
-		err := p.defineSymbol(name, info)
+	// Populate global scope with declarations from Pass 1
+	for name, infoPtr := range p.pass1Symbols {
+		err := p.defineSymbol(name, *infoPtr) // Define in Pass 2's global scope
 		if err != nil {
-			// This would be an internal error (duplicate definition in pass 1?)
-			// Or potentially a keyword collision if not handled earlier
-			p.addSemanticError(token.Token{}, "Internal Error: Failed to define pre-declared procedure '%s': %v", name, err)
+			// Should not happen if Pass 1 checked duplicates correctly
+			p.addSemanticError(token.Token{}, "Internal Error: Failed to define pre-declared symbol '%s' in Pass 2: %v", name, err)
 		}
 	}
 
-	// Check if Pratt functions are initialized (do this once)
+	// Initialize Pratt functions if not already done
 	if p.prefixParseFns == nil {
 		p.initializePratt()
 	}
 
-	// Prepare the final Program AST
 	program := &ast.Program{
 		Statements:  []ast.Statement{},
-		GlobalScope: p.currentScope,
+		GlobalScope: p.currentScope, // Assign the fully populated global scope
 	}
 
 	// Main parsing loop (Pass 2)
 	for p.curTok.Type != token.TokenEOF {
-		stmt := p.parseStatement() // This now uses scoping correctly
+		startTokForNilCheck := p.curTok // Store token before calling parseStatement
+
+		stmt := p.parseStatement()
+
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
-		} else if len(p.errors) > 0 {
-			// Attempt recovery by skipping to next potential statement start?
-			// For now, rely on individual parsers consuming tokens or the loop eventually hitting EOF
-			fmt.Printf("DEBUG: Skipping token after failed statement parse: %v\n", p.curTok)
-			p.nextToken() // Use cautiously for recovery
-		} else if p.curTok.Type != token.TokenEOF {
-			// If parseStatement returned nil but no errors, it's unexpected.
-			p.addError(p.curTok, "Internal Parser Error: parseStatement returned nil without errors")
-			p.nextToken() // Advance to prevent infinite loop
+		} else {
+			// parseStatement returned nil. Check WHY.
+			if len(p.errors) > 0 {
+				// A real error occurred during parsing the statement.
+				// Basic recovery: Skip the token that likely caused the error
+				// We might need smarter recovery later (e.g., skip until newline or ';')
+				if p.curTok == startTokForNilCheck && p.curTok.Type != token.TokenEOF {
+					// If the token didn't advance during the failed parse, force advance
+					p.nextToken()
+				} // Otherwise assume parseStatement consumed the problematic token
+			} else if p.curTok != startTokForNilCheck {
+				// Statement was skipped successfully (like 'record' def in Pass 2)
+				// parseStatement returned nil, no errors, AND curTok advanced.
+				// This is OK, just continue the loop.
+			} else if p.curTok.Type != token.TokenEOF {
+				// Statement is nil, no errors, AND token DID NOT advance.
+				// This indicates an internal parser logic error where a token
+				// wasn't handled or consumed correctly.
+				p.addError(p.curTok, "Internal Parser Error: Unhandled token %s ('%s')", p.curTok.Type, p.curTok.Literal)
+				p.nextToken() // Force advance to prevent infinite loop
+			}
 		}
 	}
 
-	// Sanity check scope
+	// Final scope check
 	if p.currentScope == nil || p.currentScope.Outer != nil {
 		p.addError(token.Token{}, "Internal Parser Error: Scope mismatch at end of parsing.")
 		return nil
@@ -241,137 +264,291 @@ func (p *Parser) ParseProgram() *ast.Program {
 
 // --- Pass 1 Implementation ---
 
-// collectProcedureSignatures performs the first pass to gather proc signatures.
-// It needs its own token handling to avoid interfering with the main parser state.
-func (p *Parser) collectProcedureSignatures() (map[string]symbols.SymbolInfo, []string) {
-	signatures := make(map[string]symbols.SymbolInfo)
+// collectGlobalDeclarations performs the first pass to gather signatures/info
+// for top-level procs, records, and potentially files (if declared explicitly at top level).
+// Populates p.pass1Symbols.
+func (p *Parser) collectGlobalDeclarations() []string {
 	pass1Errs := []string{}
-	// Use a temporary parser state for this pass to avoid side effects
-	tempParser := NewParser(p.l) // Creates a new parser with its own lexer state
-	tempParser.nextToken()       // Initialize tokens
+	tempParser := NewParser(p.l) // Use a temporary parser state
+	tempParser.nextToken()
 	tempParser.nextToken()
 
+	processedRecords := make(map[string]bool) // Track records processed in this pass
+
+	// Need to potentially loop until stable if records depend on others (not supported yet)
+	// For now, assume records are defined before use in files within Pass 1 scan.
+
 	for tempParser.curTok.Type != token.TokenEOF {
-		if tempParser.curTok.Type == token.TokenProc {
-			// --- Parse Signature ---
-			tempParser.nextToken() // Consume 'proc'
-			if tempParser.curTok.Type != token.TokenIdent {
-				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected procedure name after 'proc'", tempParser.curTok.Line, tempParser.curTok.Column))
-				tempParser.skipUntil(token.TokenProc, token.TokenEOF) // Try to find next proc
+		switch tempParser.curTok.Type {
+		case token.TokenRecord:
+			// --- Parse Record Signature ---
+			recordNameTok := tempParser.peekTok
+			if recordNameTok.Type != token.TokenIdent {
+				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected record name after 'record'", tempParser.peekTok.Line, tempParser.peekTok.Column))
+				tempParser.skipUntilDeclarationStart()
 				continue
 			}
-			procName := tempParser.curTok.Literal
-			procNameToken := tempParser.curTok
+			recordName := recordNameTok.Literal
 
-			// Check for duplicate procedure names found *during this pass*
-			if _, exists := signatures[procName]; exists {
-				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Semantic Error: Procedure '%s' already declared", procNameToken.Line, procNameToken.Column, procName))
-				// Skip rest of this signature and body
-				tempParser.skipSignatureAndBody()
+			// Check for duplicate definitions found *during this pass*
+			if _, exists := p.pass1Symbols[recordName]; exists {
+				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Semantic Error: Symbol '%s' already declared", recordNameTok.Line, recordNameTok.Column, recordName))
+				tempParser.skipRecordOrProcBody()
 				continue
 			}
 
-			tempParser.nextToken() // Consume proc name IDENT
-
-			// Parse Parameters `(...)`
-			if tempParser.curTok.Type != token.TokenLParen {
-				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected '(' after procedure name '%s'", tempParser.curTok.Line, tempParser.curTok.Column, procName))
-				tempParser.skipSignatureAndBody()
-				continue
-			}
-			// Use the main parser logic for parameter list (carefully adapting state if needed, or making it standalone)
-			// For simplicity here, let's assume parseParameterList can work with the tempParser state
-			params, paramNames, err := tempParser.parseParameterList() // Needs to handle errors and token consumption correctly
-			if err != nil || tempParser.curTok.Type != token.TokenRParen {
-				// Error already added by parseParameterList (or should be)
-				pass1Errs = append(pass1Errs, tempParser.errors...) // Collect errors
-				tempParser.errors = []string{}                      // Clear errors for next attempt
-				tempParser.skipSignatureAndBody()
-				continue
-			}
-			// At this point, curTok should be ')'
-
-			// Parse Return Type `: type`
-			if tempParser.curTok.Type != token.TokenRParen {
-				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected ')' after parameter list", tempParser.curTok.Line, tempParser.curTok.Column))
-				tempParser.skipSignatureAndBody()
-				continue
-			}
-			if tempParser.peekTok.Type != token.TokenColon {
-				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected ':' for return type after '()'", tempParser.peekTok.Line, tempParser.peekTok.Column))
-				tempParser.skipSignatureAndBody()
-				continue
-			}
-			tempParser.nextToken() // Consume ')'
-			tempParser.nextToken() // Consume ':'
-
-			// Parse the return type node
-			returnTypeNode := tempParser.parseTypeNode()
-			if returnTypeNode == nil {
-				pass1Errs = append(pass1Errs, tempParser.errors...)
-				tempParser.errors = []string{}
-				tempParser.skipSignatureAndBody()
-				continue
-			}
-			// curTok is now the token after the return type (should be '{')
-
-			// --- Store Signature ---
-			info := symbols.SymbolInfo{
-				Type:        "proc",
-				IsConst:     true,
-				Width:       0, // N/A for proc itself
-				ParamNames:  paramNames,
-				ParamTypes:  make([]string, len(params)),
-				ParamWidths: make([]int, len(params)),
-				ReturnType:  returnTypeNode.Name,
-				ReturnWidth: returnTypeNode.Width,
-			}
-			// Populate param details
-			validSignature := true
-			for i, p := range params {
-				if p.TypeNode == nil || p.TypeNode.IsVoid || p.TypeNode.Width <= 0 {
-					// Param parsing error occurred earlier, mark signature invalid
-					validSignature = false
-					break
-				}
-				info.ParamTypes[i] = p.TypeNode.Name
-				info.ParamWidths[i] = p.TypeNode.Width
-			}
-
-			if validSignature {
-				signatures[procName] = info
+			// Basic parsing just to get fields and skip body
+			recordInfo, err := tempParser.parseRecordSignatureForPass1()
+			if err != nil {
+				pass1Errs = append(pass1Errs, err.Error())
+				// skipRecordOrProcBody() should have been called internally
 			} else {
-				// Add error if not already present from param/type parsing
-				foundSigErr := false
-				for _, e := range pass1Errs {
-					if strings.Contains(e, procName) {
-						foundSigErr = true
-						break
-					}
-				}
-				if !foundSigErr {
-					pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Semantic Error: Invalid signature for procedure '%s'", procNameToken.Line, procNameToken.Column, procName))
-				}
+				recordInfo.Name = recordName // Store original name
+				infoCopy := recordInfo
+				p.pass1Symbols[recordName] = &infoCopy
+				processedRecords[recordName] = true
+			}
+			// parseRecordSignatureForPass1 consumes the body
+
+		case token.TokenProc:
+			// --- Parse Proc Signature ---
+			procNameTok := tempParser.peekTok
+			if procNameTok.Type != token.TokenIdent {
+				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected procedure name after 'proc'", tempParser.peekTok.Line, tempParser.peekTok.Column))
+				tempParser.skipUntilDeclarationStart()
+				continue
+			}
+			procName := procNameTok.Literal
+
+			if _, exists := p.pass1Symbols[procName]; exists {
+				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Semantic Error: Symbol '%s' already declared", procNameTok.Line, procNameTok.Column, procName))
+				tempParser.skipRecordOrProcBody()
+				continue
 			}
 
-			// --- Skip Body ---
-			if tempParser.curTok.Type == token.TokenLBrace {
-				tempParser.skipBlock() // Skips from '{' to past matching '}'
+			procInfo, err := tempParser.parseProcSignatureForPass1()
+			if err != nil {
+				pass1Errs = append(pass1Errs, err.Error())
+				// skipRecordOrProcBody() should have been called internally
 			} else {
-				// If '{' wasn't next, something is wrong, but signature might be stored
-				pass1Errs = append(pass1Errs, fmt.Sprintf("%d:%d: Syntax Error: Expected '{' to start body for procedure '%s', got %s", tempParser.curTok.Line, tempParser.curTok.Column, procName, tempParser.curTok.Type))
-				// Attempt to find next proc or EOF
-				tempParser.skipUntil(token.TokenProc, token.TokenEOF)
+				procInfo.Name = procName // Store original name
+				infoCopy := procInfo
+				p.pass1Symbols[procName] = &infoCopy
 			}
-			// After skipping, curTok is after '}' or at PROC/EOF
-			continue // Continue to next top-level item
+			// parseProcSignatureForPass1 consumes the body
 
+			// Note: File declarations involving `:= input(...)` happen in Pass 2.
+			// Only handle `: file = input(...)` if we decide to support that globally,
+			// but it's complex due to needing the record type.
+			// Let's assume file declarations happen inside MAIN or procs for now via `:=`.
+
+		default:
+			// Skip other tokens quickly in Pass 1
+			tempParser.nextToken()
 		}
-		// If not 'proc', advance to the next token for Pass 1 scanning
-		tempParser.nextToken()
 	}
 
-	return signatures, pass1Errs
+	// TODO: Add validation pass here? Check if records used by files/procs exist?
+	// For now, Pass 2 handles unresolved symbols.
+
+	return pass1Errs
+}
+
+// parseRecordSignatureForPass1 parses just enough to get field names/types/widths
+// and consumes the record body. Used only in Pass 1.
+func (p *Parser) parseRecordSignatureForPass1() (symbols.SymbolInfo, error) {
+	recordInfo := symbols.SymbolInfo{Type: "record", Fields: []symbols.FieldInfo{}}
+
+	if !p.expectPeek(token.TokenIdent) { // Consume 'record', check for name
+		p.skipUntilDeclarationStart()
+		return recordInfo, fmt.Errorf("%d:%d: Syntax Error: Expected record name", p.curTok.Line, p.curTok.Column)
+	}
+	// recordName := p.curTok.Literal // Name already checked by caller
+	recordNameTok := p.curTok
+
+	if !p.expectPeek(token.TokenLBrace) { // Consume name, check for '{'
+		p.skipUntilDeclarationStart()
+		return recordInfo, fmt.Errorf("%d:%d: Syntax Error: Expected '{' for record '%s'", p.curTok.Line, p.curTok.Column, recordNameTok.Literal)
+	}
+	// curTok is now '{'
+	p.nextToken() // Consume '{'
+
+	fieldOffset := 0
+	fieldNames := make(map[string]bool)
+
+	for p.curTok.Type != token.TokenRBrace && p.curTok.Type != token.TokenEOF {
+		if p.curTok.Type != token.TokenIdent {
+			p.skipRecordOrProcBody() // Skip rest of malformed body
+			return recordInfo, fmt.Errorf("%d:%d: Syntax Error: Expected field name (identifier) in record '%s'", p.curTok.Line, p.curTok.Column, recordNameTok.Literal)
+		}
+		fieldName := p.curTok.Literal
+		fieldNameTok := p.curTok
+
+		if _, exists := fieldNames[fieldName]; exists {
+			p.skipRecordOrProcBody()
+			return recordInfo, fmt.Errorf("%d:%d: Semantic Error: Duplicate field name '%s' in record '%s'", fieldNameTok.Line, fieldNameTok.Column, fieldName, recordNameTok.Literal)
+		}
+		fieldNames[fieldName] = true
+
+		if !p.expectPeek(token.TokenColon) {
+			p.skipRecordOrProcBody()
+			return recordInfo, fmt.Errorf("%d:%d: Syntax Error: Expected ':' after field name '%s'", p.curTok.Line, p.curTok.Column, fieldName)
+		}
+		// curTok is ':'
+		p.nextToken() // Consume ':'
+		// curTok is start of type node
+
+		// Parse type node (must be int or string with explicit width)
+		typeNode := p.parseTypeNode() // Use the main type parser
+		if typeNode == nil {
+			p.skipRecordOrProcBody()
+			return recordInfo, fmt.Errorf("%d:%d: Syntax Error: Invalid type specification for field '%s'", p.curTok.Line, p.curTok.Column, fieldName) // Error should be in p.errors
+		}
+		if typeNode.IsVoid || typeNode.IsRecord {
+			p.skipRecordOrProcBody()
+			return recordInfo, fmt.Errorf("%d:%d: Semantic Error: Record field '%s' type cannot be '%s'", fieldNameTok.Line, fieldNameTok.Column, fieldName, typeNode.Name)
+		}
+		if typeNode.Width <= 0 {
+			p.skipRecordOrProcBody()
+			return recordInfo, fmt.Errorf("%d:%d: Semantic Error: Record field '%s' requires an explicit positive width (e.g., int(5), string(10))", fieldNameTok.Line, fieldNameTok.Column, fieldName)
+		}
+
+		field := symbols.FieldInfo{
+			Name:   fieldName,
+			Type:   typeNode.Name,
+			Width:  typeNode.Width,
+			Offset: fieldOffset,
+		}
+		recordInfo.Fields = append(recordInfo.Fields, field)
+		fieldOffset += field.Width
+		recordInfo.TotalWidth = fieldOffset // Update total width
+
+		// curTok is now after the type spec (e.g., after ')')
+	}
+
+	if p.curTok.Type != token.TokenRBrace {
+		// Unterminated record definition
+		return recordInfo, fmt.Errorf("%d:%d: Syntax Error: Expected '}' to close record definition for '%s'", p.curTok.Line, p.curTok.Column, recordNameTok.Literal)
+	}
+	p.nextToken() // Consume '}'
+
+	return recordInfo, nil
+}
+
+// parseProcSignatureForPass1 parses just enough to get params/return type info
+// and consumes the procedure body. Used only in Pass 1.
+func (p *Parser) parseProcSignatureForPass1() (symbols.SymbolInfo, error) {
+	procInfo := symbols.SymbolInfo{Type: "proc", ParamNames: []string{}, ParamTypes: []string{}, ParamWidths: []int{}}
+
+	if !p.expectPeek(token.TokenIdent) { // Consume 'proc', check name
+		p.skipUntilDeclarationStart()
+		return procInfo, fmt.Errorf("%d:%d: Syntax Error: Expected procedure name", p.curTok.Line, p.curTok.Column)
+	}
+	// procName := p.curTok.Literal // Checked by caller
+	procNameTok := p.curTok
+
+	if !p.expectPeek(token.TokenLParen) { // Consume name, check '('
+		p.skipUntilDeclarationStart()
+		return procInfo, fmt.Errorf("%d:%d: Syntax Error: Expected '(' after procedure name '%s'", p.curTok.Line, p.curTok.Column, procNameTok.Literal)
+	}
+	// curTok is '('
+
+	// Parse parameter list (reusing main parser logic carefully)
+	// This is tricky as parseParameterList might rely on full scope lookup if types could be records.
+	// Let's assume params are simple types for now in Pass 1.
+	params, paramNames, err := p.parseParameterList() // This consumes up to ')'
+	if err != nil {
+		// Error added by parseParameterList
+		p.skipSignatureAndBody() // Try to skip rest
+		return procInfo, fmt.Errorf("error parsing parameters for '%s': %w", procNameTok.Literal, err)
+	}
+	procInfo.ParamNames = paramNames
+	// Populate types/widths - requires param types to be base types for Pass 1
+	for _, param := range params {
+		if param.TypeNode == nil {
+			continue
+		} // Skip if parsing failed earlier
+		if param.TypeNode.IsRecord {
+			// TODO: Handle record type parameters in Pass 1? Complex. Defer for now.
+			p.skipSignatureAndBody()
+			return procInfo, fmt.Errorf("%d:%d: Semantic Error: Record types as parameters not fully supported in Pass 1 yet (param '%s')", param.Name.Token.Line, param.Name.Token.Column, param.Name.Value)
+		}
+		procInfo.ParamTypes = append(procInfo.ParamTypes, param.TypeNode.Name)
+		procInfo.ParamWidths = append(procInfo.ParamWidths, param.TypeNode.Width)
+	}
+	// curTok is now ')'
+
+	if !p.expectPeek(token.TokenColon) { // Consume ')', check ':'
+		p.skipSignatureAndBody()
+		return procInfo, fmt.Errorf("%d:%d: Syntax Error: Expected ':' for return type after '()'", p.curTok.Line, p.curTok.Column)
+	}
+	// curTok is ':'
+	p.nextToken() // Consume ':'
+	// curTok is start of return type
+
+	// Parse return type node
+	returnTypeNode := p.parseTypeNode()
+	if returnTypeNode == nil {
+		p.skipSignatureAndBody()
+		return procInfo, fmt.Errorf("error parsing return type for '%s'", procNameTok.Literal) // Error should be in p.errors
+	}
+	if returnTypeNode.IsRecord {
+		// TODO: Handle record return types in Pass 1? Need to look up record.
+		p.skipSignatureAndBody()
+		return procInfo, fmt.Errorf("%d:%d: Semantic Error: Record return types not fully supported in Pass 1 yet (type '%s')", returnTypeNode.Token.Line, returnTypeNode.Token.Column, returnTypeNode.Name)
+	}
+	procInfo.ReturnType = returnTypeNode.Name
+	procInfo.ReturnWidth = returnTypeNode.Width // Width stored even if void (will be 0)
+	// curTok is now after return type (should be '{')
+
+	// Skip body
+	if p.curTok.Type != token.TokenLBrace {
+		p.skipUntilDeclarationStart()
+		return procInfo, fmt.Errorf("%d:%d: Syntax Error: Expected '{' to start body for procedure '%s'", p.curTok.Line, p.curTok.Column, procNameTok.Literal)
+	}
+	p.skipBlock() // Consumes '{' to past matching '}'
+
+	return procInfo, nil
+}
+
+// skipUntilDeclarationStart attempts to find the next 'proc' or 'record' or EOF.
+func (p *Parser) skipUntilDeclarationStart() {
+	p.skipUntil(token.TokenProc, token.TokenRecord, token.TokenEOF)
+}
+
+// skipRecordOrProcBody finds the opening '{' and skips to its matching '}'.
+func (p *Parser) skipRecordOrProcBody() {
+	// 1. Ensure we start on 'record' or 'proc'
+	if p.curTok.Type != token.TokenRecord && p.curTok.Type != token.TokenProc {
+		// Don't consume, let the caller handle the unexpected token
+		return
+	}
+
+	// 2. Consume 'record'/'proc' keyword
+	p.nextToken()
+
+	// 3. Consume the name IDENTIFIER
+	if p.curTok.Type == token.TokenIdent {
+		p.nextToken()
+	} else {
+		// If no identifier follows, it's a syntax error already,
+		// but we still need to try and find the block to skip it.
+		p.skipUntil(token.TokenLBrace, token.TokenProc, token.TokenRecord, token.TokenEOF)
+		// If we didn't find '{', exit; the outer loop will handle EOF or next decl.
+		if p.curTok.Type != token.TokenLBrace {
+			return
+		}
+		// If we found '{' after skipping, proceed to skipBlock
+	}
+
+	// 4. Now, curTok *should* be the LBrace '{'. Find and skip the block.
+	if p.curTok.Type == token.TokenLBrace {
+		p.skipBlock() // skipBlock consumes { through }
+	} else {
+		// If we consumed 'record' + 'ident' but didn't find '{'
+		// Attempt recovery by skipping to next declaration or EOF
+		p.skipUntil(token.TokenProc, token.TokenRecord, token.TokenEOF)
+	}
 }
 
 // skipSignatureAndBody attempts to advance the parser past a potentially malformed signature and its body
@@ -398,199 +575,289 @@ func (p *Parser) skipUntil(targets ...token.TokenType) {
 	}
 }
 
-// --- Statement Parsing ---
+// --- Statement Parsing (Pass 2) ---
 
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.curTok.Type {
+	case token.TokenRecord:
+		// Records only defined at top level, skip in pass 2 (already in symbol table)
+		p.skipRecordOrProcBody() // Need to skip the definition
+		return nil               // No AST node needed from Pass 2 for definition itself
 	case token.TokenProc:
-		return p.parseProcDeclarationStatement()
+		return p.parseProcDeclarationStatement() // Parse fully in Pass 2 for AST/local scope
 	case token.TokenReturn:
 		return p.parseReturnStatement()
 	case token.TokenPrint:
 		return p.parsePrintStatement()
 	case token.TokenConst:
 		return p.parseDeclarationStatement() // Handles const modifier
+	case token.TokenRead:
+		return p.parseReadStatement()
+	case token.TokenWrite:
+		return p.parseWriteStatement()
 	case token.TokenIdent:
-		// Look ahead to determine declaration, reassignment, or proc call
 		switch p.peekTok.Type {
-		case token.TokenAssignDefine, token.TokenColon: // x := ... or x : type = ...
-			return p.parseDeclarationStatement()
-		case token.TokenAssign: // x = ...
+		case token.TokenAssignDefine, token.TokenColon:
+			return p.parseDeclarationStatement() // Handles `:=` and `: type`
+		case token.TokenAssign:
 			return p.parseReassignmentStatement()
-		case token.TokenLParen: // x(...)
-			// Parse as an expression statement, which handles proc calls
-			return p.parseExpressionStatement()
+		case token.TokenLParen:
+			return p.parseExpressionStatement() // Proc call as statement
 		default:
-			p.addError(p.peekTok, "Expected ':=', ':', '=', or '(' after identifier '%s', got '%s'", p.curTok.Literal, p.peekTok.Type)
-			p.nextToken() // Consume IDENT
-			// Consume the unexpected token to attempt recovery
-			if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace { // Avoid consuming closing brace
-				p.nextToken()
-			}
-			return nil
+			// If it's just an identifier, treat as expression statement (likely warning)
+			return p.parseExpressionStatement()
 		}
-	case token.TokenLBrace: // Block statement cannot occur outside procedures
-		p.addError(p.curTok, "Unexpected '{' at the start of a top-level statement")
-		p.skipBlock() // Attempt to skip the block
+	case token.TokenLBrace:
+		p.addError(p.curTok, "Unexpected '{' at start of statement (blocks only allowed inside procedures)")
+		p.skipBlock()
 		return nil
 	case token.TokenEOF:
-		return nil // End of input
+		return nil
 	default:
-		// Could be an expression statement starting with a literal or '('.
-		// Try parsing as expression statement. If that fails, it's a syntax error.
-		parsedStmt := p.parseExpressionStatement() // Get the statement (interface type)
-
-		if parsedStmt != nil {
-			// Type assertion to get the concrete *ast.ExpressionStatement
-			exprStmt, ok := parsedStmt.(*ast.ExpressionStatement)
-			if !ok {
-				// This should not happen if parseExpressionStatement only returns *ast.ExpressionStatement
-				// But good defensive check.
-				p.addError(p.curTok, "Internal Parser Error: Expected ExpressionStatement, got %T", parsedStmt)
-				return nil // Or return parsedStmt without checks? nil seems safer.
-			}
-
-			// Now use exprStmt (which has type *ast.ExpressionStatement) to access fields
-			switch node := exprStmt.Expression.(type) {
-			case *ast.ProcCallExpression:
-				if node.ResultType() != "void" {
-					p.addWarning(exprStmt.Token, "Result of non-void procedure call '%s' is ignored.", node.Function.Value)
-				}
-			case *ast.IntegerLiteral:
-				p.addWarning(exprStmt.Token, "Integer literal used as statement has no effect.")
-			case *ast.StringLiteral:
-				p.addWarning(exprStmt.Token, "String literal used as statement has no effect.")
-			case *ast.Identifier:
-				if node.Symbol.Type == "proc" {
-					p.addSemanticError(exprStmt.Token, "Procedure '%s' used as statement without calling it.", node.Value)
-				} else if node.Symbol.Type != "unknown" {
-					p.addWarning(exprStmt.Token, "Variable '%s' used as statement has no effect.", node.Value)
-				}
-			case *ast.BinaryExpression:
-				p.addWarning(exprStmt.Token, "Binary expression used as statement has no effect.")
-			}
-			return exprStmt // Return the concrete statement
+		// Try parsing as expression statement (e.g., for literals, non-call expressions)
+		exprStmt := p.parseExpressionStatement()
+		if exprStmt != nil {
+			// Add warnings for pointless statements (literals, non-call expressions)
+			// Check done within parseExpressionStatement now
+			return exprStmt
 		}
-
-		// If parseExpressionStatement returned nil, it means parseExpression failed.
-		if len(p.errors) == 0 { // If no specific error was added, add a generic one
+		// If parseExpressionStatement failed, an error was likely added.
+		if len(p.errors) == 0 { // Add generic error if not specific one exists
 			p.addError(p.curTok, "Unexpected token at start of statement: %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		}
-		// Consume unexpected token to attempt recovery if it wasn't consumed already
-		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenRBrace {
-			p.nextToken()
-		}
+		p.nextToken() // Consume unexpected token to attempt recovery
 		return nil
 	}
 }
 
-// parseDeclarationStatement parses `[const] name := value` or `[const] name: type[(width)] = value`
+// parseDeclarationStatement parses `[const] name := value` or `[const] name: type = value` or `name : RecordType`
 func (p *Parser) parseDeclarationStatement() ast.Statement {
-	stmt := &ast.DeclarationStatement{Token: p.curTok}
+	stmt := &ast.DeclarationStatement{}
+	isConst := false
 
-	// 1. Handle 'const'
 	if p.curTok.Type == token.TokenConst {
+		isConst = true
 		stmt.IsConst = true
-		p.nextToken()
+		p.nextToken() // Consume 'const'
 		if p.curTok.Type != token.TokenIdent {
 			p.addError(p.curTok, "Expected identifier after 'const'")
 			return nil
 		}
 	}
 
-	// 2. Expect IDENT
 	if p.curTok.Type != token.TokenIdent {
-		p.addError(p.curTok, "Internal Parser Error: Expected identifier for declaration")
+		p.addError(p.curTok, "Internal Parser Error: Expected identifier for declaration start")
 		return nil
 	}
 	identToken := p.curTok
 	varName := identToken.Literal
 	stmt.Name = &ast.Identifier{Token: identToken, Value: varName}
 
-	// 3. Check for Redeclaration *in the current scope*
+	// Check for redeclaration *in the current scope*
 	_, declaredInCurrent := p.lookupCurrentScopeSymbol(varName)
 	if declaredInCurrent {
 		p.addSemanticError(identToken, "Variable '%s' already declared in this scope", varName)
-		// Don't define it again, but continue parsing
+		// Allow parsing to continue to find other errors, but don't define symbol again.
 	}
 
-	// --- Rest of parsing (Explicit/Inferred type, RHS expression) ---
-	// ... (This part remains largely the same as your previous version) ...
-	var explicitTypeNode *ast.TypeNode = nil // Store parsed explicit type info
+	var finalType string
+	var finalWidth int
+	var finalSymbolInfo symbols.SymbolInfo
+	var recordTypeSymbol *symbols.SymbolInfo // To link variable to its record type
 
-	// 4. Check for ':=' (Inferred) or ':' (Explicit) and consume tokens up to '=' or expression start
+	// Determine declaration type (:=, :, : file =)
 	switch p.peekTok.Type {
-	case token.TokenColon:
-		// --- Explicit Type Path: `name : type[(width)] = value` ---
-		stmt.HasExplicitType = true
+	case token.TokenAssignDefine: // name := value
+		if isConst {
+			p.addError(p.peekTok, "Cannot use ':=' with 'const'. Use 'const name : type = value'.")
+			return nil // TODO: try to recover
+		}
+		stmt.Token = p.peekTok // Store ':='
+		p.nextToken()          // Consume IDENT
+		p.nextToken()          // Consume ':='
+
+		valueExpr := p.parseExpression(PrecLowest)
+		if valueExpr == nil {
+			return nil
+		}
+		stmt.Value = valueExpr
+
+		// Infer type and width
+		valueType := valueExpr.ResultType()
+		valueWidth := valueExpr.ResultWidth()
+
+		if valueType == "void" {
+			p.addSemanticError(valueExpr.GetToken(), "Cannot assign result of void expression to variable '%s'", varName)
+			finalType = "unknown"
+		} else if valueType == "unknown" {
+			// Error should have been reported by expression parser
+			finalType = "unknown"
+		} else if valueType == "file" {
+			// Handle file handle assignment `fh := input(...)`
+			finalType = "file"
+			finalWidth = 0 // Files don't have intrinsic width
+			// Get the symbol info created by input/output expression parser
+			if fileExprSym := valueExpr.GetResolvedSymbol(); fileExprSym != nil {
+				// Copy relevant info from the temporary file symbol to the final symbol
+				finalSymbolInfo = symbols.SymbolInfo{
+					Name:                 varName,
+					Type:                 "file",
+					IsConst:              false, // File handles aren't const
+					Mode:                 fileExprSym.Mode,
+					SystemFileName:       fileExprSym.SystemFileName,
+					RecordTypeName:       fileExprSym.RecordTypeName,
+					FileRecordTypeSymbol: fileExprSym.FileRecordTypeSymbol, // Link to the record type symbol
+				}
+			} else {
+				p.addError(valueExpr.GetToken(), "Internal error: input/output expression did not resolve file info")
+				finalType = "unknown"
+			}
+		} else { // int, string, or record type name from function call
+			// If valueExpr is a proc call returning a record, valueType will be the record name.
+			recordSym, isRecordType := p.lookupSymbol(valueType)
+			if isRecordType && recordSym.Type == "record" {
+				// Handle assignment from func returning record: `recVar := myFuncReturningRec()`
+				finalType = valueType // Type is the record name
+				finalWidth = recordSym.TotalWidth
+				recordTypeSymbol = recordSym // Link variable to record type
+			} else if valueType == "int" || valueType == "string" {
+				// Standard type inference
+				finalType = valueType
+				finalWidth = valueWidth
+				if finalWidth <= 0 { // Apply default width if needed
+					finalWidth = lib.GetDefaultWidth(finalType)
+				}
+			} else {
+				p.addSemanticError(valueExpr.GetToken(), "Cannot infer type from expression for '%s'", varName)
+				finalType = "unknown"
+			}
+		}
+
+		// Populate standard fields only if it's not a file type (file type populated above)
+		if finalType != "file" {
+			finalSymbolInfo = symbols.SymbolInfo{
+				Name:             varName,
+				Type:             finalType,
+				Width:            finalWidth,
+				IsConst:          false,            // := is never const
+				RecordTypeSymbol: recordTypeSymbol, // Link to record type if applicable
+			}
+		}
+
+	case token.TokenColon: // --- name : type [= value] ---
 		p.nextToken() // Consume IDENT
 		p.nextToken() // Consume ':'
+		stmt.HasExplicitType = true
 
-		// Parse the TypeNode (e.g., "int", "string(10)")
-		typeNode := p.parseTypeNode()
-		if typeNode == nil {
-			return nil
-		} // Error handled in parseTypeNode
-		if typeNode.IsVoid {
-			p.addError(typeNode.Token, "Cannot declare variable '%s' with type 'void'", varName)
+		explicitTypeNode := p.parseTypeNode() // Parses int(w), string(w), void, file, RecordName
+		if explicitTypeNode == nil {
 			return nil
 		}
-		explicitTypeNode = typeNode
-		stmt.ExplicitTypeToken = typeNode.Token       // Store 'int' or 'string' token
-		stmt.ExplicitWidthToken = typeNode.WidthToken // Store '10' token if present
-
-		// Expect '=' for assignment after explicit type
-		if p.curTok.Type != token.TokenAssign {
-			p.addError(p.curTok, "Expected '=' after type specification for '%s', got %s ('%s')", varName, p.curTok.Type, p.curTok.Literal)
-			return nil
-		}
-		stmt.Token = p.curTok // Store '=' token
-		p.nextToken()         // Consume '=', curTok is now start of expression
-
-	case token.TokenAssignDefine:
-		// --- Inferred Type Path: `name := value` ---
-		stmt.HasExplicitType = false
-		p.nextToken()         // Consume IDENT. curTok is now ':='
-		stmt.Token = p.curTok // Store ':=' token
-		p.nextToken()         // Consume ':='. curTok is now start of expression
-
-	default:
-		p.addError(p.peekTok, "Expected ':=' or ':' after identifier '%s' in declaration, got '%s'", varName, p.peekTok.Type)
-		return nil
-	}
-
-	// 5. Parse the Value Expression
-	valueExpr := p.parseExpression(PrecLowest)
-	if valueExpr == nil {
-		return nil
-	}
-	stmt.Value = valueExpr
-
-	// --- 6. Semantic Analysis (Largely the same, uses finalType/finalWidth) ---
-	// ... (Type checking, width checking logic as before) ...
-	valueType := valueExpr.ResultType()
-	valueWidth := valueExpr.ResultWidth()
-	var finalType string = "unknown" // Start assuming unknown
-	var finalWidth int = 0
-
-	if valueType == "void" {
-		p.addSemanticError(valueExpr.GetToken(), "Cannot assign result of void procedure call to variable '%s'", varName)
-		valueType = "unknown" // Mark as error state to prevent symbol table entry
-	}
-	if valueType == "unknown" && len(p.errors) == 0 {
-		p.addError(stmt.Token, "Internal Error: Expression resulted in 'unknown' type without specific error for '%s' assignment", varName)
-	}
-
-	if stmt.HasExplicitType { // Explicit Type (`name : type = value`)
+		stmt.ExplicitType = explicitTypeNode
 		finalType = explicitTypeNode.Name
-		finalWidth = explicitTypeNode.Width
 
-		if valueType != "unknown" && finalType != "unknown" && finalType != valueType {
-			p.addSemanticError(valueExpr.GetToken(), "Type mismatch - cannot assign value of type '%s' to variable '%s' declared as '%s'", valueType, varName, finalType)
-			finalType = "unknown" // Mark as error state
-		}
-		// Width check for literals
-		if finalType != "unknown" {
+		// Check if it's a record type
+		if explicitTypeNode.IsRecord {
+			if isConst {
+				p.addError(identToken, "Cannot declare 'const' variable '%s' of record type '%s'", varName, finalType)
+				// Continue parsing but mark invalid
+			}
+			finalWidth = explicitTypeNode.RecordInfo.TotalWidth
+			recordTypeSymbol = explicitTypeNode.RecordInfo // Link variable to record type
+			finalSymbolInfo = symbols.SymbolInfo{
+				Name:             varName,
+				Type:             finalType, // Store record name as type
+				Width:            finalWidth,
+				IsConst:          isConst,
+				RecordTypeSymbol: recordTypeSymbol,
+			}
+			// --- Allow declaration without assignment for records ---
+			if p.curTok.Type == token.TokenAssign {
+				p.addError(p.curTok, "Direct assignment during declaration is not supported for record type '%s'. Declare first, then use READ or assign fields.", finalType)
+				// Try to skip assignment part for recovery
+				p.nextToken()                 // Consume '='
+				p.parseExpression(PrecLowest) // Parse and discard expression
+				// Fall through, symbol is defined, but assignment was error
+			}
+			// No '=' is expected/allowed here for records currently
+		} else if finalType == "file" {
+			// Explicit file declaration: `fh : file = input(...)`
+			finalWidth = 0 // Files have no width
+			finalSymbolInfo = symbols.SymbolInfo{
+				Name:    varName,
+				Type:    "file",
+				IsConst: isConst, // Const file handle? Maybe disallow.
+			}
+			if isConst {
+				p.addWarning(identToken, "Declaring 'const' file handle '%s' has no effect.", varName)
+			}
+
+			if p.curTok.Type != token.TokenAssign {
+				p.addError(p.curTok, "Expected '=' after ': file' declaration for '%s'", varName)
+				return nil
+			}
+			stmt.Token = p.curTok // Store '='
+			p.nextToken()         // Consume '='
+
+			valueExpr := p.parseExpression(PrecLowest)
+			if valueExpr == nil {
+				return nil
+			}
+			stmt.Value = valueExpr
+
+			// Check RHS type
+			if valueExpr.ResultType() != "file" {
+				p.addSemanticError(valueExpr.GetToken(), "Expected input() or output() call after ': file =', got %s", valueExpr.ResultType())
+				finalType = "unknown" // Mark as error
+			} else {
+				// Copy details from the resolved input/output expression symbol
+				if fileExprSym := valueExpr.GetResolvedSymbol(); fileExprSym != nil {
+					finalSymbolInfo.Mode = fileExprSym.Mode
+					finalSymbolInfo.SystemFileName = fileExprSym.SystemFileName
+					finalSymbolInfo.RecordTypeName = fileExprSym.RecordTypeName
+					finalSymbolInfo.FileRecordTypeSymbol = fileExprSym.FileRecordTypeSymbol
+				} else {
+					p.addError(valueExpr.GetToken(), "Internal error: input/output expression did not resolve file info")
+					finalType = "unknown"
+				}
+			}
+
+		} else if finalType == "int" || finalType == "string" {
+			// Standard explicit type: int(W) or string(W)
+			if explicitTypeNode.Width <= 0 {
+				p.addError(explicitTypeNode.Token, "Explicit width required for type '%s' is missing or invalid", finalType)
+				return nil // Already errored in parseTypeNode probably
+			}
+			finalWidth = explicitTypeNode.Width
+			finalSymbolInfo = symbols.SymbolInfo{
+				Name:    varName,
+				Type:    finalType,
+				Width:   finalWidth,
+				IsConst: isConst,
+			}
+
+			// Expect '=' assignment for non-record explicit types
+			if p.curTok.Type != token.TokenAssign {
+				p.addError(p.curTok, "Expected '=' after type specification '%s' for variable '%s'", explicitTypeNode.String(), varName)
+				return nil
+			}
+			stmt.Token = p.curTok // Store '='
+			p.nextToken()         // Consume '='
+
+			valueExpr := p.parseExpression(PrecLowest)
+			if valueExpr == nil {
+				return nil
+			}
+			stmt.Value = valueExpr
+
+			// Type check assignment
+			valueType := valueExpr.ResultType()
+			if valueType != "unknown" && valueType != finalType {
+				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to variable '%s' of type %s", valueType, varName, finalType)
+				finalType = "unknown" // Mark as error
+			}
+			// Width check assignment (literal value vs declared width)
+			valueWidth := valueExpr.ResultWidth()
 			if litInt, ok := valueExpr.(*ast.IntegerLiteral); ok && finalType == "int" {
 				reqWidth := lib.CalculateWidthForValue(litInt.Value)
 				if reqWidth > finalWidth {
@@ -599,47 +866,53 @@ func (p *Parser) parseDeclarationStatement() ast.Statement {
 			} else if litStr, ok := valueExpr.(*ast.StringLiteral); ok && finalType == "string" {
 				reqWidth := len(litStr.Value)
 				if reqWidth > finalWidth {
-					p.addSemanticError(valueExpr.GetToken(), "String literal with length %d exceeds declared width %d for variable '%s'", reqWidth, finalWidth, varName)
+					p.addSemanticError(valueExpr.GetToken(), "String literal length %d exceeds declared width %d for variable '%s'", reqWidth, finalWidth, varName)
 				}
+			} else if finalType != "unknown" && valueWidth > 0 && valueWidth > finalWidth {
+				// Warning for non-literal expressions exceeding width
+				p.addWarning(valueExpr.GetToken(), "Width of assigned expression (%d) exceeds variable '%s' declared width (%d). Potential truncation.", valueWidth, varName, finalWidth)
 			}
-		}
-	} else { // Inferred Type (`name := value`)
-		if valueType != "unknown" {
-			finalType = valueType
-			finalWidth = valueWidth
-			if finalWidth <= 0 {
-				finalWidth = lib.GetDefaultWidth(finalType)
-				if finalWidth <= 0 && finalType != "unknown" {
-					p.addWarning(stmt.Name.Token, "Could not determine valid width for inferred type '%s'. Using width 1.", finalType)
-					finalWidth = 1
-				}
-			}
-		} else {
+
+		} else if finalType == "void" {
+			p.addError(explicitTypeNode.Token, "Cannot declare variable '%s' with type 'void'", varName)
 			finalType = "unknown"
-			finalWidth = 0
+		} else { // Unknown type name used after ':'
+			p.addError(explicitTypeNode.Token, "Unknown type '%s'", finalType)
+			finalType = "unknown"
+			// Consume potential = value part
+			if p.curTok.Type == token.TokenAssign {
+				p.nextToken()
+				p.parseExpression(PrecLowest) // Parse and discard
+			}
 		}
+
+	default:
+		p.addError(p.peekTok, "Expected ':=' or ':' after identifier '%s' in declaration, got '%s'", varName, p.peekTok.Type)
+		return nil
 	}
 
-	// --- 7. Final Validation and Symbol Table Update ---
-	if finalType != "unknown" && finalWidth <= 0 {
-		p.addWarning(stmt.Name.Token, "Final width for '%s' (type %s) resolved to %d, using 1.", varName, finalType, finalWidth)
-		finalWidth = 1
-	}
+	// --- Define Symbol ---
+	if !declaredInCurrent {
 
-	// Define in current scope ONLY if not a redeclaration *at this level* AND type is valid
-	if !declaredInCurrent && finalType != "unknown" && finalType != "void" {
-		symbolInfo := symbols.SymbolInfo{
-			Type:    finalType,
-			IsConst: stmt.IsConst,
-			Width:   finalWidth,
-		}
-		err := p.defineSymbol(varName, symbolInfo)
+		// Use finalSymbolInfo which is populated based on the declaration type
+		err := p.defineSymbol(varName, finalSymbolInfo)
 		if err != nil {
-			// Should not happen if declaredInCurrent check was correct
 			p.addSemanticError(stmt.Name.Token, "Internal Error: Failed to define variable '%s': %v", varName, err)
+		} else {
+			// Link the resolved symbol back to the AST identifier node
+			resolvedSymPtr, _ := p.lookupSymbol(varName) // Look up immediately after defining
+			if resolvedSymPtr != nil {
+				stmt.Name.Symbol = resolvedSymPtr
+				// Also link the resolved record type symbol if it was a record variable declaration
+				if resolvedSymPtr.RecordTypeSymbol != nil {
+					stmt.ResolvedRecordType = resolvedSymPtr.RecordTypeSymbol
+				}
+			} else {
+				p.addError(stmt.Name.Token, "Internal Error: Failed to lookup symbol '%s' immediately after definition", varName)
+			}
 		}
-	} else {
-		p.addSemanticError(stmt.Name.Token, "Internal Error: Failed to lookup symbol '%s' immediately after definition", varName)
+	} else if !declaredInCurrent && (finalType == "unknown" || finalType == "void") {
+		// Don't define symbol if type resolution failed
 	}
 
 	return stmt
@@ -650,318 +923,296 @@ func (p *Parser) parseProcDeclarationStatement() *ast.ProcDeclarationStatement {
 	startTok := p.curTok // Store 'proc' token
 	stmt := &ast.ProcDeclarationStatement{Token: startTok}
 
-	// Proc signature was already collected in Pass 1 and added to global scope.
-	// We parse it again here for the AST structure and to set up the local scope.
+	// Assume signature already collected in Pass 1 and exists in p.pass1Symbols
 
-	if p.curTok.Type != token.TokenProc {
-		p.addError(p.curTok, "Internal Parser Error: Expected 'proc'")
-		return nil
-	}
 	if !p.expectPeek(token.TokenIdent) {
 		return nil
 	}
+	procName := p.curTok.Literal
+	stmt.Name = &ast.Identifier{Token: p.curTok, Value: procName}
 
-	// Create Identifier node, Symbol is initially nil
-	stmt.Name = &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
-	procName := stmt.Name.Value
-	previousProcName := p.currentProcName
-	p.currentProcName = procName
-
-	// Check if it exists in the global scope (sanity check for Pass 1)
-	procInfoPtr, exists := p.lookupSymbol(procName) // Should find it in global scope
-
-	if !exists || procInfoPtr.Type != "proc" {
-		// This implies Pass 1 failed or logic error
-		p.addSemanticError(stmt.Name.Token, "Internal Error: Procedure '%s' signature not found during Pass 2", procName)
-	} else {
-		stmt.Name.Symbol = procInfoPtr // Mark valid proc
-	}
-
-	// Enter new scope
-	p.pushScope()
-	stmt.LocalScope = p.currentScope
-	defer p.popScope()
-
-	// Parse Parameter List `(...)` again for AST and local scope definition
-	if !p.expectPeek(token.TokenLParen) {
-		p.currentProcName = previousProcName
+	// Retrieve full symbol info defined from Pass 1
+	procInfoPtr, exists := p.lookupSymbol(procName) // Look up in current (global) scope
+	if !exists || procInfoPtr == nil || procInfoPtr.Type != "proc" {
+		p.addSemanticError(stmt.Name.Token, "Internal Error: Procedure '%s' signature not found in scope during Pass 2", procName)
+		// Attempt to skip body for recovery
+		p.skipSignatureAndBody()
 		return nil
 	}
-	params, _, err := p.parseParameterList() // Don't need paramNames list here
-	if err != nil {
+	stmt.Name.Symbol = procInfoPtr
+
+	// --- Enter Proc Scope ---
+	previousProcName := p.currentProcName
+	p.currentProcName = procName
+	p.pushScope() // Create new scope for params and locals
+	stmt.LocalScope = p.currentScope
+	defer func() {
+		p.popScope() // Ensure scope is popped even on error return
 		p.currentProcName = previousProcName
-		return nil // Error handled in parseParameterList
+	}()
+
+	// Parse Parameter List `(...)`
+	if !p.expectPeek(token.TokenLParen) {
+		return nil
+	}
+	// Pass 2: Parse params fully for AST, resolving types (including records)
+	params, _, err := p.parseParameterList() // Pass 2 version needs full type resolution
+	if err != nil {
+		return nil
 	}
 	stmt.Parameters = params
-	// curTok should be ')'
 
-	// Define parameters in the *current* (new) scope
-	for _, param := range stmt.Parameters {
-		// Pass 1 already validated param signature, define it here
+	// Define parameters in the *local* scope
+	for i, param := range stmt.Parameters {
 		if param.Name != nil && param.TypeNode != nil {
-			paramInfo := symbols.SymbolInfo{
-				Type:    param.TypeNode.Name,
-				IsConst: false, // Parameters are mutable by default
-				Width:   param.TypeNode.Width,
-			}
-			defErr := p.defineSymbol(param.Name.Value, paramInfo)
-			if defErr != nil {
-				// This should only happen if parseParameterList allowed duplicates somehow
-				p.addSemanticError(param.Name.Token, "Internal Error: %v", defErr)
+			// Get param info from the globally stored proc symbol for consistency
+			if i < len(procInfoPtr.ParamTypes) {
+				paramInfo := symbols.SymbolInfo{
+					Name:             param.Name.Value,
+					Type:             procInfoPtr.ParamTypes[i], // Use type name from global info
+					Width:            procInfoPtr.ParamWidths[i],
+					IsConst:          false,                     // Params are not const
+					RecordTypeSymbol: param.TypeNode.RecordInfo, // Link if param type node resolved to a record
+				}
+				defErr := p.defineSymbol(param.Name.Value, paramInfo)
+				if defErr != nil {
+					// Should only happen if parseParameterList allowed duplicates
+					p.addSemanticError(param.Name.Token, "Internal Error: %v", defErr)
+				} else {
+					// Link param identifier in AST to its symbol
+					paramSymPtr, _ := p.lookupCurrentScopeSymbol(param.Name.Value)
+					param.Name.Symbol = paramSymPtr
+				}
+			} else {
+				p.addError(param.Name.Token, "Internal Error: Parameter count mismatch between AST and symbol info for '%s'", procName)
 			}
 		}
 	}
 
-	// Parse Return Type `: type` again for AST
+	// --- Parse Return Type `: type` ---
 	if p.curTok.Type != token.TokenRParen {
-		p.addError(p.curTok, "Internal Parser Error: Expected ')'")
-		p.currentProcName = previousProcName
+		p.addError(p.curTok, "Expected ')'")
 		return nil
 	}
 	if !p.expectPeek(token.TokenColon) {
-		p.addError(p.peekTok, "Expected ':' for return type after '()', got '%s'", p.curTok.Type)
-		p.currentProcName = previousProcName
+		p.addError(p.peekTok, "Expected ':' for return type")
 		return nil
 	}
 	p.nextToken() // Consume ':'
 
+	// Pass 2: Parse return type fully, resolving records
 	returnTypeNode := p.parseTypeNode()
 	if returnTypeNode == nil {
-		p.currentProcName = previousProcName
 		return nil
 	}
-	if procInfoPtr != nil && procInfoPtr.ReturnType == returnTypeNode.Name && procInfoPtr.ReturnWidth != returnTypeNode.Width {
-		p.addError(returnTypeNode.Token, "Internal Parser Error: Return width mismatch between Pass 1 (%d) and Pass 2 (%d) for '%s'", procInfoPtr.ReturnWidth, returnTypeNode.Width, procName)
-		p.currentProcName = previousProcName
-		return nil
-	}
-
 	stmt.ReturnType = returnTypeNode
-	// curTok should be '{'
 
-	// Parse Procedure Body `{...}`
+	// --- Semantic Check: Return type consistency with Pass 1 ---
+	if returnTypeNode.Name != procInfoPtr.ReturnType {
+		p.addError(returnTypeNode.Token, "Internal Error: Return type mismatch between Pass 1 ('%s') and Pass 2 ('%s') for '%s'", procInfoPtr.ReturnType, returnTypeNode.Name, procName)
+		// Decide how critical this is. Maybe proceed but log error.
+	}
+	// Link return type symbol if it's a record
+	if returnTypeNode.IsRecord {
+		procInfoPtr.ReturnRecordTypeSymbol = returnTypeNode.RecordInfo
+	}
+
+	// --- Parse Procedure Body `{...}` ---
 	if p.curTok.Type != token.TokenLBrace {
-		p.addError(p.curTok, "Expected '{' to start procedure body, got %s", p.curTok.Type)
-		p.currentProcName = previousProcName
+		p.addError(p.curTok, "Expected '{'")
 		return nil
 	}
-	stmt.Body = p.parseBlockStatement() // Will parse statements within the new scope
+	stmt.Body = p.parseBlockStatement() // Parses statements within the proc's scope
 	if stmt.Body == nil {
-		p.currentProcName = previousProcName
-		return nil // Error in body parsing
-	}
-	// parseBlockStatement consumed '}'
-
-	// TODO: Check if there's a return statement.
-	// This is basic, just check if the last line in the proc body is a return stmt
-	// Need to revisit this for more complex control flow
-	if !stmt.ReturnType.IsVoid {
-		hasReturn := false
-		if len(stmt.Body.Statements) > 0 {
-			if _, ok := stmt.Body.Statements[len(stmt.Body.Statements)-1].(*ast.ReturnStatement); ok {
-				hasReturn = true
-			}
-		}
-		if !hasReturn {
-			p.addSemanticError(stmt.Name.Token, "Missing return statement in non-void procedure '%s'", procName)
-		}
+		return nil
 	}
 
-	// Scope is popped by defer
+	// TODO: Enhanced check for missing return statement in non-void procs
 
-	p.currentProcName = previousProcName // Restore outer context
 	return stmt
 }
 
-// parseTypeNode parses a type specification: `type(width)` or `void`
-// Used for explicit variable types, parameters, and return types.
-// Expects curTok to be the type name (IDENT or VOID). Consumes tokens through type spec.
-// Returns the TypeNode or nil on error.
-// IMPORTANT: If type is non void and width is not specified, we throw a semantic error
+// parseTypeNode parses a type specification: `type(width)` or `void` or `RecordName` or `file`
+// Returns the TypeNode or nil on error. Sets IsRecord flag and RecordInfo if applicable.
 func (p *Parser) parseTypeNode() *ast.TypeNode {
-	// Expect 'int', 'string', or 'void'
-	isKnownTypeLiteral := p.curTok.Type == token.TokenTypeLiteral && (p.curTok.Literal == "int" || p.curTok.Literal == "string")
-	isVoidType := p.curTok.Type == token.TokenVoid
+	typeTok := p.curTok
+	typeName := typeTok.Literal
 
-	if !isKnownTypeLiteral && !isVoidType {
-		p.addError(p.curTok, "Expected type name (int, string, void), got %s ('%s')", p.curTok.Type, p.curTok.Literal)
-		// Attempt recovery by consuming the bad token? Let caller handle.
-		// If we consume here, caller might misinterpret next token. Better to return nil.
-		// p.nextToken()
+	node := &ast.TypeNode{Token: typeTok, Name: typeName}
+
+	switch typeTok.Type {
+	case token.TokenVoid:
+		node.IsVoid = true
+		node.Width = 0
+		p.nextToken() // Consume 'void'
+
+	case token.TokenFileKeyword: // `file` type keyword
+		node.Name = "file" // Canonical type name
+		node.Width = 0
+		p.nextToken() // Consume 'file'
+		// No width allowed for file type
+		if p.curTok.Type == token.TokenLParen {
+			p.addError(p.curTok, "Width specification not allowed for 'file' type")
+			p.skipParentheses() // Attempt recovery
+			return nil
+		}
+
+	case token.TokenTypeLiteral: // int, string
+		if typeName != "int" && typeName != "string" {
+			p.addError(typeTok, "Internal Error: Unexpected TYPE_LITERAL '%s'", typeName)
+			p.nextToken()
+			return nil
+		}
+		p.nextToken() // Consume 'int' or 'string'
+		// Check for explicit width `(width)`
+		if p.curTok.Type == token.TokenLParen {
+			p.nextToken() // Consume '('
+			if p.curTok.Type != token.TokenInt {
+				p.addError(p.curTok, "Expected integer width inside parentheses for type '%s'", typeName)
+				if p.curTok.Type != token.TokenRParen {
+					p.nextToken()
+				} // Consume bad token
+				if p.curTok.Type == token.TokenRParen {
+					p.nextToken()
+				} // Consume ')'
+				return nil
+			}
+			node.WidthToken = p.curTok
+			widthVal, err := strconv.Atoi(p.curTok.Literal)
+			if err != nil || widthVal <= 0 {
+				p.addError(p.curTok, "Invalid width '%s'. Must be positive integer.", p.curTok.Literal)
+				// Keep width 0 to indicate error
+			} else {
+				node.Width = widthVal
+			}
+			p.nextToken() // Consume INT
+			if p.curTok.Type != token.TokenRParen {
+				p.addError(p.curTok, "Expected ')' after width specification, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
+				// Attempt to recover slightly by skipping until ) if possible? Or just return nil. Let's return nil.
+				return nil
+			}
+			p.nextToken() // Consume the ')' <<<--- IMPORTANT
+		} else {
+			// No width provided - error? Or default? PARAMS/FIELDS require width.
+			// Let the caller (parseParameter, parseRecordField, etc.) decide if width is mandatory.
+			// Store 0 to indicate no explicit width was parsed.
+			node.Width = 0
+		}
+
+	case token.TokenIdent: // Could be a record type name
+		recordSymbol, exists := p.lookupSymbol(typeName) // Look up in current scope outwards
+		if exists && recordSymbol.Type == "record" {
+			node.IsRecord = true
+			node.RecordInfo = recordSymbol
+			node.Width = recordSymbol.TotalWidth // Store total width
+			p.nextToken()                        // Consume record type IDENT
+			// No width spec allowed for record types
+			if p.curTok.Type == token.TokenLParen {
+				p.addError(p.curTok, "Width specification not allowed for record type '%s'", typeName)
+				p.skipParentheses() // Attempt recovery
+				return nil
+			}
+		} else {
+			p.addError(typeTok, "Unknown type name '%s'", typeName)
+			p.nextToken() // Consume unknown type identifier
+			return nil
+		}
+
+	default:
+		p.addError(typeTok, "Expected type name (int, string, void, file, record name), got %s", typeTok.Type)
+		p.nextToken() // Consume the unexpected token
 		return nil
 	}
 
-	typeTok := p.curTok
-	typeName := typeTok.Literal
-	node := &ast.TypeNode{
-		Token:  typeTok,
-		Name:   typeName,
-		IsVoid: isVoidType,
-		Width:  0,
-	}
-	p.nextToken() // Consume type name token ('int', 'string', 'void')
-
-	// Parse optional width `(int)` only if not void
-	if !node.IsVoid && p.curTok.Type == token.TokenLParen {
-		p.nextToken() // Consume '('
-		if p.curTok.Type != token.TokenInt {
-			p.addError(p.curTok, "Expected integer width inside parentheses for type '%s', got %s ('%s')", typeName, p.curTok.Type, p.curTok.Literal)
-			// Consume the bad token inside parens if it's not ')'
-			if p.curTok.Type != token.TokenRParen && p.curTok.Type != token.TokenEOF {
-				p.nextToken()
-			}
-			// If we now see ')', consume it
-			if p.curTok.Type == token.TokenRParen {
-				p.nextToken()
-			}
-			return nil
-		}
-		node.WidthToken = p.curTok // Store the INT token
-		widthVal, err := strconv.Atoi(p.curTok.Literal)
-		if err != nil || widthVal <= 0 {
-			p.addError(p.curTok, "Invalid width specification '%s'. Width must be a positive integer.", p.curTok.Literal)
-			node.Width = 0 // Mark as invalid width for now
-		} else {
-			node.Width = widthVal
-		}
-		p.nextToken() // Consume INT
-
-		if p.curTok.Type != token.TokenRParen {
-			p.addError(p.curTok, "Expected ')' after width specification, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
-			// Don't consume if not ')', let caller handle
-			return nil // Error, stop parsing type node
-		}
-		p.nextToken() // Consume ')'
-	} else if !node.IsVoid && node.Width == 0 {
-		// Enforce explicit width. If it's not void and width is still 0, it means no valid positive width was parsed via returnType(int).
-		p.addError(typeTok, "Explicit positive width specification (e.g. int(10), string(30)) is required for non-void type '%s'", typeName)
-		return nil // Type node is invalid
-	}
-	// If void, width is 0 (which is valid for void).
-	// If width was validly parsed, node.Width has the explicit value.
-
-	// curTok is now the token *after* the type specification (e.g., '=', '{', ',', ')')
 	return node
 }
 
-// parseParameterList parses `ident: type(width), ident: type(width), ...`
-// Expects curTok to be '('. Consumes tokens inside the list.
-// Leaves curTok on the closing ')'.
-// Returns list of Parameter nodes, list of param names, and error.
+// parseParameterList (Pass 2) - Parses params fully, resolving record types.
 func (p *Parser) parseParameterList() ([]*ast.Parameter, []string, error) {
 	params := []*ast.Parameter{}
 	paramNames := []string{}
-	paramNameSet := make(map[string]bool) // For checking duplicate names
+	paramNameSet := make(map[string]bool)
 
-	if p.curTok.Type != token.TokenLParen { // Should be called only when curTok is '('
-		p.addError(p.curTok, "Internal Parser Error: Expected '(' to start parameter list, got %s", p.curTok.Type)
-		return nil, nil, fmt.Errorf("internal error: missing '('")
+	if p.curTok.Type != token.TokenLParen {
+		p.addError(p.curTok, "Internal Parser Error: Expected '('")
+		return nil, nil, fmt.Errorf("internal error")
 	}
-
-	// Check for empty list: ()
 	if p.peekTok.Type == token.TokenRParen {
-		p.nextToken()                  // Consume '('
-		return params, paramNames, nil // Return empty lists, success
+		p.nextToken() // Consume '('
+		p.nextToken() // Consume ')'
+		return params, paramNames, nil
 	}
-
 	p.nextToken() // Consume '('
 
-	// Parse first parameter
+	// First param
 	param, err := p.parseSingleParameter()
 	if err != nil {
 		return nil, nil, err
-	} // Error handled in parseSingleParameter
+	}
 	if _, duplicate := paramNameSet[param.Name.Value]; duplicate {
 		p.addSemanticError(param.Name.Token, "Duplicate parameter name '%s'", param.Name.Value)
-		// Continue parsing other params to find more errors, but mark this call as failed?
-		// For now, let's stop on first duplicate by returning error.
-		return nil, nil, fmt.Errorf("duplicate parameter name")
+		return nil, nil, fmt.Errorf("duplicate parameter")
 	}
 	params = append(params, param)
 	paramNames = append(paramNames, param.Name.Value)
 	paramNameSet[param.Name.Value] = true
-	// parseSingleParameter consumes tokens up to token after type spec
 
-	// Parse subsequent parameters (separated by comma)
+	// Subsequent params
 	for p.curTok.Type == token.TokenComma {
-
-		p.nextToken() // Consume ','
-
-		// Handle trailing comma case: `(a: int(1), )`
-		if p.curTok.Type == token.TokenRParen {
-			p.addError(p.curTok, "Unexpected ')' after comma in parameter list")
-			return nil, nil, fmt.Errorf("unexpected ')' after comma")
+		p.nextToken()                           // Consume ','
+		if p.curTok.Type == token.TokenRParen { // Trailing comma
+			p.addError(p.curTok, "Unexpected ')' after comma")
+			return nil, nil, fmt.Errorf("trailing comma")
 		}
-
 		param, err := p.parseSingleParameter()
 		if err != nil {
 			return nil, nil, err
 		}
 		if _, duplicate := paramNameSet[param.Name.Value]; duplicate {
 			p.addSemanticError(param.Name.Token, "Duplicate parameter name '%s'", param.Name.Value)
-			return nil, nil, fmt.Errorf("duplicate parameter name")
+			return nil, nil, fmt.Errorf("duplicate parameter")
 		}
 		params = append(params, param)
 		paramNames = append(paramNames, param.Name.Value)
 		paramNameSet[param.Name.Value] = true
 	}
 
-	// Expect ')' - DO NOT CONSUME IT HERE
+	// Expect ')' - DO NOT CONSUME
 	if p.curTok.Type != token.TokenRParen {
-		p.addError(p.curTok, "Expected ',' or ')' after parameter, got %s ('%s')", p.curTok.Type, p.curTok.Literal)
-		// Recovery? Skip until ')'? For now, return error.
+		p.addError(p.curTok, "Expected ',' or ')' after parameter, got %s", p.curTok.Type)
 		return nil, nil, fmt.Errorf("syntax error in parameter list")
 	}
 
 	return params, paramNames, nil
 }
 
-// parseSingleParameter parses `ident: type(width)` - width is MANDATORY here.
-// Expects curTok to be the identifier. Consumes up to token after type spec.
+// parseSingleParameter (Pass 2) - Uses full type resolution. Width mandatory for base types.
 func (p *Parser) parseSingleParameter() (*ast.Parameter, error) {
 	if p.curTok.Type != token.TokenIdent {
-		p.addError(p.curTok, "Expected parameter name (identifier), got %s ('%s')", p.curTok.Type, p.curTok.Literal)
-		if p.curTok.Type != token.TokenEOF && p.curTok.Type != token.TokenColon && p.curTok.Type != token.TokenRParen {
-			p.nextToken()
-		} // Consume bad token
-		return nil, fmt.Errorf("expected parameter name")
+		p.addError(p.curTok, "Expected parameter name")
+		return nil, fmt.Errorf("expected name")
 	}
 	ident := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
 
 	if !p.expectPeek(token.TokenColon) {
 		p.addError(p.peekTok, "Expected ':' after parameter name '%s'", ident.Value)
-		return nil, fmt.Errorf("expected ':' after parameter name")
+		return nil, fmt.Errorf("expected ':'")
 	}
-	// curTok is now ':'
 	p.nextToken() // Consume ':'
-	// curTok is now the start of the type node
 
-	// Parse the type node (e.g., "int(10)", "string(30)")
-	typeNode := p.parseTypeNode()
+	typeNode := p.parseTypeNode() // Resolves int(w), string(w), RecordType
 	if typeNode == nil {
-		return nil, fmt.Errorf("invalid type specification for parameter '%s'", ident.Value)
+		return nil, fmt.Errorf("invalid type for parameter '%s'", ident.Value)
 	}
 	if typeNode.IsVoid {
 		p.addError(typeNode.Token, "Parameter '%s' cannot have type 'void'", ident.Value)
-		return nil, fmt.Errorf("parameter cannot be void")
+		return nil, fmt.Errorf("void parameter")
 	}
-	// Check if width was explicitly provided (it's mandatory for params)
-	// parseTypeNode sets Width > 0 if explicit width was given, or 0 if not.
-	// It does NOT assign default width for parameters.
-	if typeNode.Width <= 0 { // Check if a valid positive width was parsed
-		// WidthToken check is more precise if parseTypeNode preserves it correctly
-		widthMissing := typeNode.WidthToken.Type != token.TokenInt
-		if widthMissing {
-			p.addError(typeNode.Token, "Explicit width specification (e.g. int(10), string(30)) is required for parameter '%s'", ident.Value)
-		} else {
-			// Width was provided but was invalid (e.g., "(0)", "(-5)") - parseTypeNode should have errored
-			// Add a safety error here if needed.
-			if len(p.errors) == 0 || !strings.Contains(p.errors[len(p.errors)-1], "Invalid width specification") {
-				p.addError(typeNode.WidthToken, "Invalid width '%s' for parameter '%s'", typeNode.WidthToken.Literal, ident.Value)
-			}
-		}
-		// Enforce the rule: no valid width means error.
-		return nil, fmt.Errorf("missing or invalid mandatory width for parameter")
+	// Width check: Mandatory for int/string, irrelevant for records
+	if !typeNode.IsRecord && typeNode.Width <= 0 {
+		// parseTypeNode sets Width>0 only if explicitly provided and valid
+		p.addError(typeNode.Token, "Explicit positive width required for parameter '%s' of type '%s'", ident.Value, typeNode.Name)
+		return nil, fmt.Errorf("missing/invalid width for parameter")
 	}
 
 	return &ast.Parameter{Name: ident, TypeNode: typeNode}, nil
@@ -984,13 +1235,12 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 		if stmt != nil {
 			block.Statements = append(block.Statements, stmt)
 		} else {
-			// If parseStatement returned nil due to an error, it should have consumed
+			// TODO: If parseStatement returned nil due to an error, it should have consumed
 			// the problematic token. If it was EOF, the loop condition handles it.
 			// If it was some other reason, we might loop infinitely.
 			// Safeguard: if errors occurred and we haven't reached the end or }, advance.
 			if len(p.errors) > 0 && p.curTok.Type != token.TokenRBrace && p.curTok.Type != token.TokenEOF {
-				// fmt.Printf("DEBUG: Advancing token after failed statement parse in block: %v\n", p.curTok)
-				// p.nextToken() // Use cautiously
+				p.nextToken()
 			}
 		}
 	}
@@ -998,22 +1248,20 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	if p.curTok.Type != token.TokenRBrace {
 		// If EOF was reached before '}', add error
 		p.addError(p.curTok, "Expected '}' to close block, found %s ('%s')", p.curTok.Type, p.curTok.Literal)
-		// Attempt to find '}' for recovery? Difficult. Return nil for now.
 		return nil
 	}
 
 	p.nextToken() // Consume '}' - curTok is now after '}'
-
 	return block
 }
 
 // skipBlock attempts recovery by consuming tokens until a matching '}'
 func (p *Parser) skipBlock() {
-	openCount := 1 // Assume '{' was the current token
+	openCount := 1
 	if p.curTok.Type != token.TokenLBrace {
 		return
-	} // Should not happen if called correctly
-	p.nextToken() // Consume the initial '{'
+	}
+	p.nextToken() // Consume initial '{'
 
 	for openCount > 0 && p.curTok.Type != token.TokenEOF {
 		switch p.curTok.Type {
@@ -1022,122 +1270,86 @@ func (p *Parser) skipBlock() {
 		case token.TokenRBrace:
 			openCount--
 		}
-		if openCount == 0 { // Found matching brace
-			p.nextToken() // Consume the final '}'
+		// IMPORTANT: Check count *before* consuming the final brace
+		if openCount == 0 {
 			break
 		}
 		p.nextToken()
 	}
-	// If loop finished due to EOF, error state persists.
+	// Consume the final '}' AFTER the loop condition ensures openCount is 0
+	if p.curTok.Type == token.TokenRBrace && openCount == 0 {
+		p.nextToken()
+	}
 }
 
-// parseReturnStatement parses `return [expression]`
+// parseReturnStatement (Pass 2) parses `return [expression]`
 func (p *Parser) parseReturnStatement() ast.Statement {
 	stmt := &ast.ReturnStatement{Token: p.curTok}
-	returnTok := p.curTok // Keep the 'return' token for error reporting location
-	p.nextToken()         // Consume 'return'
+	returnTok := p.curTok
+	p.nextToken() // Consume 'return'
 
-	// --- Semantic Check: Inside a procedure? ---
 	if p.currentProcName == "" {
 		p.addError(returnTok, "'return' statement outside of procedure")
-		// Skip parsing expression, assume end of statement
-		// Try to advance until a likely statement boundary? Let main loop handle for now.
-		// Consume any potential value that might follow invalidly
-		if p.isExpressionStart(p.curTok) {
-			p.skipExpressionTokens() // Basic attempt to consume the invalid expression
-		}
+		return nil
+	}
+	procInfo, ok := p.lookupSymbol(p.currentProcName) // Look up in current scope outwards
+	if !ok || procInfo.Type != "proc" {
+		p.addError(returnTok, "Internal Error: Cannot find procedure info for '%s'", p.currentProcName)
 		return nil
 	}
 
-	// --- Get Procedure Return Info ---
-	procInfo, ok := p.getSymbolInfo(p.currentProcName)
-	if !ok { // Should not happen if currentProcName is set correctly
-		p.addError(returnTok, "Internal Parser Error: Could not find symbol info for current procedure '%s'", p.currentProcName)
-		procInfo = symbols.SymbolInfo{ReturnType: "unknown"} // Fallback for checks, treat as error state
-	}
-
-	// --- Parse Return Value (or check for none if void) ---
-	// Check if something follows 'return' that could be an expression start
 	hasPotentialValue := p.isExpressionStart(p.curTok)
 
 	if procInfo.ReturnType == "void" {
-		// Void function: should not have a return value
 		if hasPotentialValue {
-			p.addSemanticError(p.curTok, "Cannot return a value from procedure '%s' declared as void", p.currentProcName)
-			// Consume the start of the invalid expression to allow parsing to continue
-			p.skipExpressionTokens() // Attempt to consume the invalid expression
-		}
-		// Whether error or not, void return has nil value node
-		stmt.ReturnValue = nil
-		// No nextToken needed here, curTok is already after 'return' or after skipped value
-	} else if procInfo.ReturnType == "unknown" {
-		// Error case from missing proc info
-		p.addError(returnTok, "Cannot determine validity of return statement for procedure '%s' due to previous errors", p.currentProcName)
-		if hasPotentialValue {
+			p.addSemanticError(p.curTok, "Cannot return value from void procedure '%s'", p.currentProcName)
 			p.skipExpressionTokens()
 		}
-		return nil
-	} else {
-		// Non-void function: MUST have a return value
+		stmt.ReturnValue = nil
+	} else { // Expecting non-void return
 		if !hasPotentialValue {
-			// Check if it's immediately followed by '}' or EOF
-			if p.curTok.Type == token.TokenRBrace || p.curTok.Type == token.TokenEOF {
-				p.addError(returnTok, "Expected expression after 'return' for non-void procedure '%s'", p.currentProcName)
-			} else {
-				// Some other token followed return, but not an expression start
-				p.addError(p.curTok, "Expected expression after 'return', got %s ('%s')", p.curTok.Type, p.curTok.Literal)
-			}
+			p.addError(returnTok, "Expected expression after 'return' for non-void procedure '%s'", p.currentProcName)
 			return nil
 		}
-
 		returnValue := p.parseExpression(PrecLowest)
 		if returnValue == nil {
-			// Error added by parseExpression or syntax error after return
-			if len(p.errors) == 0 || !strings.Contains(p.errors[len(p.errors)-1], "Expected expression") { // Avoid duplicate generic errors
-				// This condition might be tricky, parseExpression should report its own errors.
-				// IfreturnValue is nil and no error exists, it's an unexpected state.
-				p.addError(returnTok, "Internal Parser Error: Failed to parse return expression for non-void procedure '%s'", p.currentProcName)
-			}
 			return nil
 		}
 		stmt.ReturnValue = returnValue
 
 		// --- Semantic Check: Return type match ---
-		valueType := returnValue.ResultType()
-		if valueType != "unknown" && valueType != procInfo.ReturnType {
-			p.addSemanticError(returnValue.GetToken(), "Type mismatch - cannot return value of type %s from procedure '%s' declared to return %s", valueType, p.currentProcName, procInfo.ReturnType)
+		valueType := returnValue.ResultType() // Can be "int", "string", "RecordName"
+		expectedType := procInfo.ReturnType   // Can also be "int", "string", "RecordName"
+
+		if valueType == "void" {
+			p.addSemanticError(returnValue.GetToken(), "Cannot return result of void expression/call from '%s'", p.currentProcName)
+		} else if valueType != "unknown" && valueType != expectedType {
+			p.addSemanticError(returnValue.GetToken(), "Type mismatch: cannot return %s from procedure '%s' expecting %s", valueType, p.currentProcName, expectedType)
 		}
 
-		// --- Semantic Check: Return width compatibility (Warning) ---
+		// --- Semantic Check: Return width compatibility (Warning/Error) ---
+		// Only applicable if NOT returning a record type
 		valueWidth := returnValue.ResultWidth()
-		declaredWidth := procInfo.ReturnWidth
-		// Check only if types are compatible/known, widths are positive, and value > declared
-		if valueType != "unknown" && valueType != "void" && valueType == procInfo.ReturnType && valueWidth > 0 && declaredWidth > 0 && valueWidth > declaredWidth {
+		declaredWidth := procInfo.ReturnWidth // This is 0 if proc returns a record
 
-			// Check if the returned value is a literal
-			isLiteralReturn := false
-			if _, ok := returnValue.(*ast.IntegerLiteral); ok {
-				isLiteralReturn = true
-			}
-			if _, ok := returnValue.(*ast.StringLiteral); ok {
-				isLiteralReturn = true
-			}
+		if procInfo.ReturnRecordTypeSymbol == nil && valueType == expectedType { // Check only non-record compatible types
+			if valueWidth > 0 && declaredWidth > 0 && valueWidth > declaredWidth {
+				isLiteralReturn := false // Check if returnValue is IntLiteral or StringLiteral
+				if _, ok := returnValue.(*ast.IntegerLiteral); ok {
+					isLiteralReturn = true
+				}
+				if _, ok := returnValue.(*ast.StringLiteral); ok {
+					isLiteralReturn = true
+				}
 
-			if isLiteralReturn {
-				// ERROR for literals exceeding declared width
-				p.addSemanticError(returnValue.GetToken(), "Literal return value width (%d) exceeds declared return width (%d) for procedure '%s'", valueWidth, declaredWidth, p.currentProcName)
-			} else {
-				// WARNING for non-literals (variables, expressions) - Keep this as a warning
-				p.addWarning(returnValue.GetToken(), "Width of returned expression (%d) may exceed declared return width (%d) for procedure '%s'. Potential truncation.", valueWidth, declaredWidth, p.currentProcName)
+				if isLiteralReturn {
+					p.addSemanticError(returnValue.GetToken(), "Literal return value width (%d) exceeds declared width (%d) for '%s'", valueWidth, declaredWidth, p.currentProcName)
+				} else {
+					p.addWarning(returnValue.GetToken(), "Width of returned expression (%d) may exceed declared width (%d) for '%s'.", valueWidth, declaredWidth, p.currentProcName)
+				}
 			}
-
-		} else if valueType != "unknown" && valueType != "void" && declaredWidth <= 0 && procInfo.ReturnType != "void" {
-			// Existing warning about invalid declared width in proc signature
-			p.addWarning(returnTok, "Could not verify return width for procedure '%s'; declared width is invalid (%d).", p.currentProcName, declaredWidth)
 		}
 	}
-
-	// parseExpression consumed tokens. curTok is now after the returned value (or where it should be).
 	return stmt
 }
 
@@ -1181,7 +1393,6 @@ func (p *Parser) parseExpressionStatement() ast.Statement {
 
 	expr := p.parseExpression(PrecLowest)
 	if expr == nil {
-		// Error reported by parseExpression or sub-parsers
 		return nil
 	}
 	stmt.Expression = expr
@@ -1214,76 +1425,101 @@ func (p *Parser) parseExpressionStatement() ast.Statement {
 // parseReassignmentStatement parses `name = value`
 func (p *Parser) parseReassignmentStatement() ast.Statement {
 	stmt := &ast.ReassignmentStatement{}
-
 	if p.curTok.Type != token.TokenIdent {
-		p.addError(p.curTok, "Internal Parser Error: Expected identifier for reassignment")
+		p.addError(p.curTok, "Internal Error: Expected identifier")
 		return nil
 	}
 	identToken := p.curTok
 	stmt.Name = &ast.Identifier{Token: identToken, Value: p.curTok.Literal}
 	varName := stmt.Name.Value
 
-	// Semantic Check: Is declared (in any scope)? Is const?
-	symbolInfoPtr, declared := p.lookupSymbol(varName) // Use lookupSymbol
-	isConst := false
+	// --- Semantic Check: Declaration, Constness, Type ---
+	targetSymbolPtr, declared := p.lookupSymbol(varName)
 	isValidTarget := false
+	var targetType string
+	var targetWidth int
+	var targetRecordSymbol *symbols.SymbolInfo
 
 	if !declared {
 		p.addSemanticError(identToken, "Cannot assign to undeclared variable '%s'", varName)
-	} else if symbolInfoPtr.Type == "proc" {
-		p.addSemanticError(identToken, "Cannot assign to procedure '%s'", varName)
 	} else {
-		symbolInfo := *symbolInfoPtr // Dereference after checks
-		if symbolInfo.IsConst {
-			p.addSemanticError(identToken, "Cannot assign to constant variable '%s'", varName)
-			isConst = true
+		stmt.Name.Symbol = targetSymbolPtr // Link identifier in AST
+		targetType = targetSymbolPtr.Type
+		targetWidth = targetSymbolPtr.Width
+		targetRecordSymbol = targetSymbolPtr.RecordTypeSymbol // Will be non-nil if it's a record variable
+
+		if targetSymbolPtr.Type == "proc" {
+			p.addSemanticError(identToken, "Cannot assign to procedure '%s'", varName)
+		} else if targetSymbolPtr.Type == "file" {
+			p.addSemanticError(identToken, "Cannot reassign file handle '%s'. Declare new handles with ':='.", varName)
+		} else if targetSymbolPtr.IsConst {
+			p.addSemanticError(identToken, "Cannot assign to constant '%s'", varName)
+		} else {
+			isValidTarget = true
 		}
-		isValidTarget = !isConst
 	}
 
-	// Expect '='
+	// --- Parse RHS ---
 	if !p.expectPeek(token.TokenAssign) {
 		return nil
 	}
 	stmt.Token = p.curTok
-
-	// Parse RHS expression
-	p.nextToken()
+	p.nextToken() // Consume '='
 	valueExpr := p.parseExpression(PrecLowest)
 	if valueExpr == nil {
 		return nil
 	}
 	stmt.Value = valueExpr
 
-	// --- Semantic Check 3 & 4: Type and Width compatibility ---
-	if isValidTarget && declared { // Only check if target is valid and info exists
-		symbolInfo := *symbolInfoPtr // Use the info found
+	// --- Semantic Checks: Type and Width ---
+	if isValidTarget {
 		valueType := valueExpr.ResultType()
-		targetType := symbolInfo.Type
-
-		// Type Check
-		if valueType == "void" {
-			p.addSemanticError(valueExpr.GetToken(), "Cannot assign result of void procedure call to variable '%s'", varName)
-		} else if valueType != "unknown" && targetType != "unknown" && targetType != valueType {
-			p.addSemanticError(valueExpr.GetToken(), "Type mismatch - cannot assign value of type '%s' to variable '%s' (type '%s')", valueType, varName, targetType)
-		}
-
-		// Width Check (Error for literals, Warning for expressions)
 		valueWidth := valueExpr.ResultWidth()
-		declaredWidth := symbolInfo.Width
-		if valueType != "unknown" && targetType != "unknown" && valueType == targetType && valueWidth > 0 && declaredWidth > 0 && valueWidth > declaredWidth {
-			isLiteralRHS := false
-			if _, ok := valueExpr.(*ast.IntegerLiteral); ok {
-				isLiteralRHS = true
-			}
-			if _, ok := valueExpr.(*ast.StringLiteral); ok {
-				isLiteralRHS = true
+		valueRecordSymbol := valueExpr.GetResolvedSymbol() // Get record symbol if RHS resolves to one
+
+		// Check void assignment
+		if valueType == "void" {
+			p.addSemanticError(valueExpr.GetToken(), "Cannot assign result of void expression to '%s'", varName)
+		} else if valueType != "unknown" && targetType != "unknown" {
+			// --- Type Compatibility ---
+			// Check 1: Basic types (int, string) must match exactly
+			isBasicTarget := (targetType == "int" || targetType == "string")
+			isBasicValue := (valueType == "int" || valueType == "string")
+
+			if isBasicTarget && isBasicValue && targetType != valueType {
+				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to variable '%s' of type %s", valueType, varName, targetType)
+			} else if targetRecordSymbol != nil && valueRecordSymbol != nil {
+				// Check 2: Record types must match exactly (by name/symbol pointer)
+				if targetRecordSymbol.Name != valueRecordSymbol.Name { // Compare by original name for error message
+					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record of type %s to variable '%s' of type %s", valueRecordSymbol.Name, varName, targetRecordSymbol.Name)
+				} else {
+					// TODO: Emit MOVE CORRESPONDING for record assignment later
+				}
+			} else if targetRecordSymbol != nil && valueRecordSymbol == nil {
+				// Check 3: Cannot assign basic type to record var
+				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to record variable '%s' of type %s", valueType, varName, targetRecordSymbol.Name)
+			} else if targetRecordSymbol == nil && valueRecordSymbol != nil {
+				// Check 4: Cannot assign record type to basic var
+				p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record of type %s to variable '%s' of type %s", valueRecordSymbol.Name, varName, targetType)
 			}
 
-			if isLiteralRHS {
-				p.addSemanticError(valueExpr.GetToken(), "Value width %d exceeds variable '%s' width %d", valueWidth, varName, declaredWidth)
-			} else {
-				p.addWarning(valueExpr.GetToken(), "Width of assigned value (%d) might exceed variable '%s' width (%d). Potential truncation.", valueWidth, varName, declaredWidth)
+			// --- Width Compatibility (only for basic types) ---
+			if isBasicTarget && isBasicValue && targetType == valueType {
+				if valueWidth > 0 && targetWidth > 0 && valueWidth > targetWidth {
+					isLiteralRHS := false
+					if _, ok := valueExpr.(*ast.IntegerLiteral); ok {
+						isLiteralRHS = true
+					}
+					if _, ok := valueExpr.(*ast.StringLiteral); ok {
+						isLiteralRHS = true
+					}
+
+					if isLiteralRHS {
+						p.addSemanticError(valueExpr.GetToken(), "Value width %d exceeds variable '%s' width %d", valueWidth, varName, targetWidth)
+					} else {
+						p.addWarning(valueExpr.GetToken(), "Width of assigned value (%d) might exceed variable '%s' width (%d).", valueWidth, varName, targetWidth)
+					}
+				}
 			}
 		}
 	}
@@ -1339,7 +1575,132 @@ func (p *Parser) parsePrintStatement() ast.Statement {
 	return stmt
 }
 
-// --- Expression Parsing (Pratt Parser) ---
+// --- I/O Statement Parsers (Pass 2) ---
+
+func (p *Parser) parseReadStatement() ast.Statement {
+	stmt := &ast.ReadStatement{Token: p.curTok}
+	if !p.expectPeek(token.TokenIdent) { // Expect file handle name
+		p.addError(p.peekTok, "Expected file handle identifier after 'read'")
+		return nil
+	}
+	fileIdent := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	stmt.FileHandle = fileIdent
+
+	// Lookup file handle symbol
+	fileSym, ok := p.lookupSymbol(fileIdent.Value)
+	if !ok {
+		p.addSemanticError(fileIdent.Token, "Undeclared file handle '%s'", fileIdent.Value)
+		// Continue parsing to find INTO error maybe
+	} else if fileSym.Type != "file" {
+		p.addSemanticError(fileIdent.Token, "'%s' is not a file handle (it's a %s)", fileIdent.Value, fileSym.Type)
+	} else if fileSym.Mode != "input" {
+		p.addSemanticError(fileIdent.Token, "File handle '%s' was not opened for input", fileIdent.Value)
+	} else {
+		stmt.FileHandle.Symbol = fileSym // Link AST node to symbol
+		stmt.FileHandleSymbol = fileSym  // Store for emitter convenience
+	}
+
+	if !p.expectPeek(token.TokenInto) { // Expect 'into'
+		p.addError(p.peekTok, "Expected 'into' after file handle '%s' in read statement", fileIdent.Value)
+		return nil
+	}
+
+	if !p.expectPeek(token.TokenIdent) { // Expect record variable name
+		p.addError(p.peekTok, "Expected record variable identifier after 'into'")
+		return nil
+	}
+	recordVarIdent := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	stmt.RecordVar = recordVarIdent
+
+	// Lookup record variable symbol
+	recVarSym, ok := p.lookupSymbol(recordVarIdent.Value)
+	if !ok {
+		p.addSemanticError(recordVarIdent.Token, "Undeclared record variable '%s'", recordVarIdent.Value)
+	} else if recVarSym.IsConst {
+		p.addSemanticError(recordVarIdent.Token, "Cannot read into constant '%s'", recordVarIdent.Value)
+	} else if recVarSym.RecordTypeSymbol == nil { // Check if it's actually a record variable
+		p.addSemanticError(recordVarIdent.Token, "'%s' is not a record variable (it's a %s)", recordVarIdent.Value, recVarSym.Type)
+	} else {
+		stmt.RecordVar.Symbol = recVarSym // Link AST node
+		stmt.RecordVarSymbol = recVarSym  // Store for emitter
+
+		// Check if record variable type matches file's expected record type
+		if fileSym != nil && fileSym.Type == "file" && fileSym.FileRecordTypeSymbol != nil {
+			if fileSym.FileRecordTypeSymbol.Name != recVarSym.RecordTypeSymbol.Name { // Compare record type names
+				p.addSemanticError(recordVarIdent.Token, "Type mismatch: file '%s' expects record type '%s', but variable '%s' is type '%s'",
+					fileIdent.Value, fileSym.RecordTypeName, recordVarIdent.Value, recVarSym.RecordTypeSymbol.Name)
+			}
+		} else if fileSym != nil && fileSym.Type == "file" {
+			p.addError(fileIdent.Token, "Internal Error: File handle '%s' has no associated record type information", fileIdent.Value)
+		}
+	}
+
+	p.nextToken()
+
+	return stmt
+}
+
+func (p *Parser) parseWriteStatement() ast.Statement {
+	stmt := &ast.WriteStatement{Token: p.curTok}
+	if !p.expectPeek(token.TokenIdent) { // Expect file handle name
+		p.addError(p.peekTok, "Expected file handle identifier after 'write'")
+		return nil
+	}
+	fileIdent := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	stmt.FileHandle = fileIdent
+
+	// Lookup file handle symbol
+	fileSym, ok := p.lookupSymbol(fileIdent.Value)
+	if !ok {
+		p.addSemanticError(fileIdent.Token, "Undeclared file handle '%s'", fileIdent.Value)
+	} else if fileSym.Type != "file" {
+		p.addSemanticError(fileIdent.Token, "'%s' is not a file handle (it's a %s)", fileIdent.Value, fileSym.Type)
+	} else if fileSym.Mode != "output" {
+		p.addSemanticError(fileIdent.Token, "File handle '%s' was not opened for output", fileIdent.Value)
+	} else {
+		stmt.FileHandle.Symbol = fileSym
+		stmt.FileHandleSymbol = fileSym
+	}
+
+	if !p.expectPeek(token.TokenFrom) { // Expect 'from'
+		p.addError(p.peekTok, "Expected 'from' after file handle '%s' in write statement", fileIdent.Value)
+		return nil
+	}
+
+	if !p.expectPeek(token.TokenIdent) { // Expect record variable name
+		p.addError(p.peekTok, "Expected record variable identifier after 'from'")
+		return nil
+	}
+	recordVarIdent := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	stmt.RecordVar = recordVarIdent
+
+	// Lookup record variable symbol
+	recVarSym, ok := p.lookupSymbol(recordVarIdent.Value)
+	if !ok {
+		p.addSemanticError(recordVarIdent.Token, "Undeclared record variable '%s'", recordVarIdent.Value)
+	} else if recVarSym.RecordTypeSymbol == nil { // Check if it's a record variable
+		p.addSemanticError(recordVarIdent.Token, "'%s' is not a record variable (it's a %s)", recordVarIdent.Value, recVarSym.Type)
+	} else {
+		stmt.RecordVar.Symbol = recVarSym
+		stmt.RecordVarSymbol = recVarSym
+
+		// Check if record variable type matches file's expected record type
+		if fileSym != nil && fileSym.Type == "file" && fileSym.FileRecordTypeSymbol != nil {
+			if fileSym.FileRecordTypeSymbol.Name != recVarSym.RecordTypeSymbol.Name {
+				p.addSemanticError(recordVarIdent.Token, "Type mismatch: file '%s' expects record type '%s', but variable '%s' is type '%s'",
+					fileIdent.Value, fileSym.RecordTypeName, recordVarIdent.Value, recVarSym.RecordTypeSymbol.Name)
+			}
+		} else if fileSym != nil && fileSym.Type == "file" {
+			p.addError(fileIdent.Token, "Internal Error: File handle '%s' has no associated record type information", fileIdent.Value)
+		}
+	}
+
+	p.nextToken()
+
+	return stmt
+}
+
+// --- Expression Parsing (Pratt Parser is Pass 2) ---
 
 // Type definitions for Pratt parsing functions
 type (
@@ -1375,6 +1736,8 @@ func (p *Parser) initializePratt() {
 	p.registerPrefix(token.TokenInt, p.parseIntegerLiteral)
 	p.registerPrefix(token.TokenString, p.parseStringLiteral)
 	p.registerPrefix(token.TokenLParen, p.parseGroupedExpression)
+	p.registerPrefix(token.TokenInput, p.parseInputOutputExpression)
+	p.registerPrefix(token.TokenOutput, p.parseInputOutputExpression)
 	// p.registerPrefix(TokenMinus, p.parsePrefixExpression) // Example for unary minus
 	// p.registerPrefix(TokenPlus, p.parsePrefixExpression) // Example for unary plus
 
@@ -1498,28 +1861,126 @@ func (p *Parser) parseGroupedExpression() ast.Expression {
 	return &ast.GroupedExpression{Token: startToken, Expression: expr} // Keep structure
 }
 
+// parseInputOutputExpression
+func (p *Parser) parseInputOutputExpression() ast.Expression {
+	modeToken := p.curTok
+	mode := modeToken.Literal // "input" or "output"
+
+	if !p.expectPeek(token.TokenLParen) {
+		return nil
+	}
+	p.nextToken() // Consume '('
+
+	// Expect system file name (string literal)
+	if p.curTok.Type != token.TokenString {
+		p.addError(p.curTok, "Expected system file name (string literal) as first argument to %s()", mode)
+		p.skipUntilCommaOrEnd(token.TokenRParen)
+		if p.curTok.Type == token.TokenRParen {
+			p.nextToken()
+		}
+		return nil
+	}
+	sysFileNameLit := p.parseStringLiteral().(*ast.StringLiteral) // Use existing parser
+
+	// Expect comma
+	if p.curTok.Type != token.TokenComma {
+		p.addError(p.curTok, "Expected ',' after file name in %s()", mode)
+		p.skipUntil(token.TokenRParen)
+		if p.curTok.Type == token.TokenRParen {
+			p.nextToken()
+		}
+		return nil
+	}
+	p.nextToken() // Consume ','
+
+	// Expect record type name (identifier)
+	if p.curTok.Type != token.TokenIdent {
+		p.addError(p.curTok, "Expected record type name (identifier) as second argument to %s()", mode)
+		p.skipUntil(token.TokenRParen)
+		if p.curTok.Type == token.TokenRParen {
+			p.nextToken()
+		}
+		return nil
+	}
+	recordTypeIdent := p.parseIdentifier().(*ast.Identifier) // Use existing parser
+
+	// Semantic check: Lookup record type name globally
+	recordSym, ok := p.lookupSymbol(recordTypeIdent.Value) // Should be global
+	if !ok {
+		p.addSemanticError(recordTypeIdent.Token, "Undeclared record type '%s' used in %s()", recordTypeIdent.Value, mode)
+		recordSym = &symbols.SymbolInfo{Type: "unknown"} // Avoid nil pointer checks later, mark as error state
+	} else if recordSym.Type != "record" {
+		p.addSemanticError(recordTypeIdent.Token, "'%s' is not a record type (it's a %s)", recordTypeIdent.Value, recordSym.Type)
+		recordSym.Type = "unknown" // Mark as error state
+	}
+
+	// Expect closing parenthesis
+	if p.curTok.Type != token.TokenRParen {
+		p.addError(p.curTok, "Expected ')' after arguments in %s()", mode)
+		// Don't consume, let outer parser handle if possible
+		return nil
+	}
+	p.nextToken() // Consume ')'
+
+	// Create a temporary symbol info for the file handle this expression represents.
+	// This info will be copied when assigned via `fh := input(...)`
+	fileInfo := &symbols.SymbolInfo{
+		Type:                 "file", // Indicates the result type
+		Mode:                 mode,
+		SystemFileName:       sysFileNameLit.Value,
+		RecordTypeName:       recordTypeIdent.Value,
+		FileRecordTypeSymbol: nil, // Initialize
+	}
+	// Link to the actual record symbol if it was found correctly
+	if recordSym.Type == "record" {
+		fileInfo.FileRecordTypeSymbol = recordSym
+	}
+
+	// Create appropriate AST node
+	if mode == "input" {
+		return &ast.InputExpression{
+			Token:              modeToken,
+			SystemFileName:     sysFileNameLit,
+			RecordTypeName:     recordTypeIdent,
+			ResolvedFileInfo:   fileInfo,  // Store the temp info
+			ResolvedRecordInfo: recordSym, // Store the looked-up record info
+		}
+	} else { // mode == "output"
+		return &ast.OutputExpression{
+			Token:              modeToken,
+			SystemFileName:     sysFileNameLit,
+			RecordTypeName:     recordTypeIdent,
+			ResolvedFileInfo:   fileInfo,  // Store the temp info
+			ResolvedRecordInfo: recordSym, // Store the looked-up record info
+		}
+	}
+}
+
 // --- Pratt LED/Infix Functions ---
 
 func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
-	// This function handles binary operators like +, -, *, /
-	opToken := p.curTok // The binary operator token
+	opToken := p.curTok
 	operator := opToken.Literal
 	precedence := tokenPrecedence(opToken)
-
-	p.nextToken() // Consume the operator
-
-	// Parse the right operand with the same or higher precedence
+	p.nextToken() // Consume operator
 	right := p.parseExpression(precedence)
 	if right == nil {
-		p.addError(opToken, "Expected expression after operator '%s'", operator)
-		return nil // Can't build node without right side
+		return nil
 	}
 
-	// --- Semantic Checks for Binary Operation ---
+	// --- Semantic Checks ---
 	leftType := left.ResultType()
 	rightType := right.ResultType()
 	isValidOp := false
 
+	// Disallow operations on record or file types directly
+	if leftType == "record" || rightType == "record" || leftType == "file" || rightType == "file" {
+		p.addSemanticError(opToken, "Operator '%s' cannot be applied to record or file types ('%s', '%s')", operator, leftType, rightType)
+		// Don't attempt folding, result type is unknown/error
+		return &ast.BinaryExpression{Token: opToken, Left: left, Operator: operator, Right: right} // Return node for structure, but type is error
+	}
+
+	// --- Existing Checks for int/string ---
 	if operator == "+" {
 		if leftType == "int" && rightType == "int" {
 			isValidOp = true
@@ -1531,43 +1992,32 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 		if leftType == "int" && rightType == "int" {
 			isValidOp = true
 		}
-	} // Add other operators here (e.g., comparison)
+	}
 
-	// Handle errors: void operands, type mismatch, invalid operator
 	if leftType == "void" || rightType == "void" {
 		p.addSemanticError(opToken, "Cannot use void value in binary operation '%s'", operator)
-		isValidOp = false // Ensure it's marked invalid
+		isValidOp = false
 	} else if !isValidOp {
-		// Only add error if types are known but incompatible, or operator invalid
-		if leftType != "unknown" && rightType != "unknown" {
-			errMsg := fmt.Sprintf("Operator '%s' cannot be applied to types '%s' and '%s'", operator, leftType, rightType)
-			p.addSemanticError(opToken, errMsg)
-		} else {
-			// If unknown types involved, previous errors likely exist. Avoid redundant messages.
+		if leftType != "unknown" && rightType != "unknown" { // Avoid redundant errors
+			p.addSemanticError(opToken, "Operator '%s' cannot be applied to types '%s' and '%s'", operator, leftType, rightType)
 		}
-		// Result type remains unknown
-	} else if operator == "/" { // Specific check for division by zero literal
+	} else if operator == "/" {
 		if lit, ok := right.(*ast.IntegerLiteral); ok && lit.Value == 0 {
 			p.addSemanticError(opToken, "Division by literal zero")
-			// Result type remains int, but operation is problematic. Width calculation might default.
 		}
 	}
 
 	// --- Constant Folding ---
-	// Check if folding is possible (both operands literals, valid op)
-	foldedExpr := p.tryConstantFolding(left, right, opToken)
-	if foldedExpr != nil {
-		return foldedExpr // Return the folded result directly
+	if isValidOp { // Only fold if operation is valid for the types
+		foldedExpr := p.tryConstantFolding(left, right, opToken)
+		if foldedExpr != nil {
+			return foldedExpr
+		}
 	}
 
-	// No folding, build the BinaryExpression node
-	expr := &ast.BinaryExpression{
-		Token:    opToken,
-		Left:     left,
-		Operator: operator,
-		Right:    right,
-	}
-	// ResultType/Width will be calculated lazily by the node itself
+	// Build the BinaryExpression node
+	expr := &ast.BinaryExpression{Token: opToken, Left: left, Operator: operator, Right: right}
+	// ResultType/Width calculated lazily by the node
 	return expr
 }
 
@@ -1575,88 +2025,94 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 func (p *Parser) parseProcCallExpression(function ast.Expression) ast.Expression {
 	ident, ok := function.(*ast.Identifier)
 	if !ok {
-		p.addError(p.curTok, "Expected identifier before '(' for procedure call, got %T", function)
-		p.skipParentheses()
+		p.addError(p.curTok, "Expected identifier before '(' for procedure call")
 		return nil
 	}
-	// IDENT already has its Symbol field set by parseIdentifier
 
 	procName := ident.Value
-
 	if ident.Symbol == nil {
-		// Error added by parseIdentifier (undeclared)
 		p.skipParentheses()
 		return nil
-	}
+	} // Undeclared error already added
 	if ident.Symbol.Type != "proc" {
-		p.addSemanticError(ident.Token, "'%s' is not a procedure, it's a %s", procName, ident.Symbol.Type)
+		p.addSemanticError(ident.Token, "'%s' is not a procedure", procName)
 		p.skipParentheses()
 		return nil
 	}
 	symbolInfo := *ident.Symbol
 
 	expr := &ast.ProcCallExpression{
-		Token:               ident.Token, // Use identifier token for location
+		Token:               ident.Token,
 		Function:            ident,
-		ResolvedReturnType:  symbolInfo.ReturnType,
-		ResolvedReturnWidth: symbolInfo.ReturnWidth,
+		ResolvedReturnType:  symbolInfo.ReturnType,             // Name of return type (e.g., "int", "MyRecord")
+		ResolvedReturnWidth: symbolInfo.ReturnWidth,            // Width if int/string, 0 otherwise
+		ResolvedRecordType:  symbolInfo.ReturnRecordTypeSymbol, // Link if returns record
 	}
 
-	// Parse Arguments
+	// Parse Arguments `(...)`
+	if p.curTok.Type != token.TokenLParen { // Should be '(' as this is infix call
+		p.addError(p.curTok, "Internal Error: Expected '(' for procedure call infix")
+		return nil
+	}
 	p.nextToken() // Consume '('
 	var err error
 	expr.Arguments, err = p.parseExpressionList(token.TokenRParen) // Parses until ')'
 	if err != nil {
-		return nil // Error handled in parseExpressionList
+		return nil
 	}
 	// curTok is now after ')'
 
-	// --- Semantic Checks: Argument Count & Types (mostly same as before) ---
+	// --- Semantic Checks: Argument Count & Types ---
 	if len(expr.Arguments) != len(symbolInfo.ParamNames) {
-		p.addSemanticError(ident.Token, "Procedure '%s' expects %d arguments, but got %d", procName, len(symbolInfo.ParamNames), len(expr.Arguments))
+		p.addSemanticError(ident.Token, "Procedure '%s' expects %d args, got %d", procName, len(symbolInfo.ParamNames), len(expr.Arguments))
 	} else {
-		// Check types and widths
 		for i, argExpr := range expr.Arguments {
-			argType := argExpr.ResultType()
+			argType := argExpr.ResultType() // e.g., "int", "MyRecord"
 			argWidth := argExpr.ResultWidth()
-			// Ensure ParamTypes/Widths exist before indexing
+			// argRecordSymbol := argExpr.GetResolvedSymbol() // Record symbol if arg is record var/expr
+
 			if i >= len(symbolInfo.ParamTypes) || i >= len(symbolInfo.ParamWidths) {
-				p.addError(ident.Token, "Internal Error: Mismatch between ParamNames and ParamTypes/Widths for '%s'", procName)
-				break // Stop checking args for this call
+				p.addError(ident.Token, "Internal Error: Arg count mismatch for '%s'", procName)
+				break
 			}
-			expectedType := symbolInfo.ParamTypes[i]
+			expectedType := symbolInfo.ParamTypes[i] // e.g., "int", "MyRecord"
 			expectedWidth := symbolInfo.ParamWidths[i]
+			// TODO: Need expected record type symbol from procInfo for comparison
+			// expectedParamRecordSymbol := symbolInfo.ParamRecordTypeSymbols[i] // Need to add this to SymbolInfo
 
 			argToken := argExpr.GetToken()
 
-			// Type Check
+			// Basic Type Check
 			if argType == "void" {
-				p.addSemanticError(argToken, "Cannot pass result of void procedure call as argument %d to '%s'", i+1, procName)
-			} else if argType != "unknown" && argType != expectedType {
-				p.addSemanticError(argToken, "Type mismatch for argument %d of '%s'. Expected '%s', got '%s'", i+1, procName, expectedType, argType)
-			}
-
-			// Width Check
-			if argType != "unknown" && argType != "void" && argType == expectedType && argWidth > 0 && expectedWidth > 0 && argWidth > expectedWidth {
-				isLiteralArg := false
-				if _, ok := argExpr.(*ast.IntegerLiteral); ok {
-					isLiteralArg = true
-				}
-				if _, ok := argExpr.(*ast.StringLiteral); ok {
-					isLiteralArg = true
-				}
-
-				if isLiteralArg {
-					p.addSemanticError(argToken, "Argument %d width %d exceeds parameter width %d for '%s'", i+1, argWidth, expectedWidth, procName)
+				p.addSemanticError(argToken, "Cannot pass void value as argument %d to '%s'", i+1, procName)
+			} else if argType != "unknown" && expectedType != "unknown" {
+				// Check if types match by name (covers int, string, and record names)
+				if argType != expectedType {
+					p.addSemanticError(argToken, "Type mismatch for arg %d of '%s'. Expected '%s', got '%s'", i+1, procName, expectedType, argType)
 				} else {
-					p.addWarning(argToken, "Width of argument %d (%d) might exceed parameter width (%d) for '%s'. Potential truncation.", i+1, argWidth, expectedWidth, procName)
+					// --- Width Check (only if types match and are NOT records) ---
+					_, isRecordArg := p.lookupSymbol(argType) // Quick check if argType is a known record name
+					if !isRecordArg {                         // Only check width for non-record types like int/string
+						if argWidth > 0 && expectedWidth > 0 && argWidth > expectedWidth {
+							isLiteralArg := false // Check if argExpr is IntLiteral or StringLiteral
+							if _, ok := argExpr.(*ast.IntegerLiteral); ok {
+								isLiteralArg = true
+							}
+							if _, ok := argExpr.(*ast.StringLiteral); ok {
+								isLiteralArg = true
+							}
+
+							if isLiteralArg {
+								p.addSemanticError(argToken, "Arg %d width %d exceeds parameter width %d for '%s'", i+1, argWidth, expectedWidth, procName)
+							} else {
+								p.addWarning(argToken, "Width of arg %d (%d) might exceed param width (%d) for '%s'.", i+1, argWidth, expectedWidth, procName)
+							}
+						}
+					}
 				}
-			} else if argType != "unknown" && argType != "void" && argType == expectedType && expectedWidth <= 0 {
-				p.addWarning(ident.Token, "Could not verify width for argument %d of '%s'; parameter declared width is invalid (%d).", i+1, procName, expectedWidth)
 			}
 		}
 	}
-
 	return expr
 }
 
