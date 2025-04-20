@@ -3,33 +3,35 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 A PIC 9(6).
-       01 B PIC 9(6).
-       01 C PIC 9(7).
-       01 D PIC 9(7).
-       01 E PIC 9(7).
-       01 F PIC 9(6).
-       01 G PIC 9(8).
-       01 H PIC 9(8).
-       01 I PIC 9(13).
+       01 GRACE-A PIC 9(2).
+       01 GRACE-B PIC 9(1).
+       01 GRACE-C PIC 9(3).
+       01 GRACE-D PIC 9(3).
+       01 GRACE-E PIC 9(2).
+       01 GRACE-F PIC 9(2).
+       01 GRACE-G PIC 9(3).
+       01 GRACE-H PIC 9(4).
+       01 GRACE-I PIC 9(4).
+
+      *GRACE Compiler Helper Variables
+       01 GRACE-TMP-INT PIC 9(6).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE 10 TO A.
-           MOVE 5 TO B.
-           COMPUTE C = A + B.
-           COMPUTE D = A - 3.
-           COMPUTE E = B * 2.
-           COMPUTE F = A / 2.
-           DISPLAY C.
-           DISPLAY D.
-           DISPLAY E.
-           DISPLAY F.
-           COMPUTE G = A + (B * 2).
-           DISPLAY G.
-           COMPUTE H = (A + B) * 2.
-           DISPLAY H.
-           COMPUTE I = (A * B) + 2.
-           DISPLAY I.
+           MOVE 10 TO GRACE-A.
+           MOVE 5 TO GRACE-B.
+           COMPUTE GRACE-C = GRACE-A + GRACE-B.
+           COMPUTE GRACE-D = GRACE-A - 3.
+           COMPUTE GRACE-E = GRACE-B * 2.
+           COMPUTE GRACE-F = GRACE-A / 2.
+           DISPLAY GRACE-C.
+           DISPLAY GRACE-D.
+           DISPLAY GRACE-E.
+           DISPLAY GRACE-F.
+           COMPUTE GRACE-G = GRACE-A + ( GRACE-B * 2 ).
+           DISPLAY GRACE-G.
+           COMPUTE GRACE-H = ( ( GRACE-A + GRACE-B ) ) * 2.
+           DISPLAY GRACE-H.
+           COMPUTE GRACE-I = ( GRACE-A * GRACE-B ) + 2.
+           DISPLAY GRACE-I.
            GOBACK.

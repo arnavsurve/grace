@@ -3,18 +3,17 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 COUNTER PIC 9(6).
-       01 MESSAGE PIC X(30).
+       01 GRACE-COUNTER PIC 9(2).
+       01 GRACE-MESSAGE PIC X(7).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE "Initial" TO MESSAGE.
-           DISPLAY MESSAGE.
-           MOVE "Changed" TO MESSAGE.
-           DISPLAY MESSAGE.
-           MOVE 10 TO COUNTER.
-           DISPLAY COUNTER.
-           MOVE 20 TO COUNTER.
-           DISPLAY COUNTER.
+           MOVE "Initial" TO GRACE-MESSAGE.
+           DISPLAY GRACE-MESSAGE.
+           MOVE "Changed" TO GRACE-MESSAGE.
+           DISPLAY GRACE-MESSAGE.
+           MOVE 10 TO GRACE-COUNTER.
+           DISPLAY GRACE-COUNTER.
+           MOVE 20 TO GRACE-COUNTER.
+           DISPLAY GRACE-COUNTER.
            GOBACK.

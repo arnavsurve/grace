@@ -1,11 +1,11 @@
 // Empty procedure
-proc empty() {
+proc empty(): void {
 }
 
 // Procedure using a global variable
 gval := 42
 
-proc showVal() {
+proc showVal(): void {
     print("Value in proc: ")
     print(gval)
 }

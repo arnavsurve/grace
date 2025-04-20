@@ -3,20 +3,20 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 COPY_LONG PIC X(55).
-       01 EXACT_STR PIC X(30).
-       01 LONG_STR PIC X(55).
-       01 SHORT_STR PIC X(30).
+       01 GRACE-COPY-LONG PIC X(55).
+       01 GRACE-EXACT-STR PIC X(30).
+       01 GRACE-LONG-STR PIC X(55).
+       01 GRACE-SHORT-STR PIC X(5).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE "Hello" TO SHORT_STR.
-           MOVE "123456789012345678901234567890" TO EXACT_STR.
-           MOVE "This string is intentionally longer than 30 characters." TO LONG_STR.
-           MOVE LONG_STR TO COPY_LONG.
-           DISPLAY SHORT_STR.
-           DISPLAY EXACT_STR.
-           DISPLAY LONG_STR.
-           DISPLAY COPY_LONG.
+           MOVE "Hello" TO GRACE-SHORT-STR.
+           MOVE "123456789012345678901234567890" TO GRACE-EXACT-STR.
+           MOVE "This string is intentionally longer than 30 characters"
+      -"." TO GRACE-LONG-STR.
+           MOVE GRACE-LONG-STR TO GRACE-COPY-LONG.
+           DISPLAY GRACE-SHORT-STR.
+           DISPLAY GRACE-EXACT-STR.
+           DISPLAY GRACE-LONG-STR.
+           DISPLAY GRACE-COPY-LONG.
            GOBACK.

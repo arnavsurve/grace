@@ -3,18 +3,17 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 DEST PIC 9(6).
-       01 S_DEST PIC X(30).
-       01 S_SOURCE PIC X(30).
-       01 SOURCE PIC 9(6).
+       01 GRACE-DEST PIC 9(2).
+       01 GRACE-S-DEST PIC X(3).
+       01 GRACE-S-SOURCE PIC X(3).
+       01 GRACE-SOURCE PIC 9(2).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE 42 TO SOURCE.
-           MOVE SOURCE TO DEST.
-           DISPLAY DEST.
-           MOVE "abc" TO S_SOURCE.
-           MOVE S_SOURCE TO S_DEST.
-           DISPLAY S_DEST.
+           MOVE 42 TO GRACE-SOURCE.
+           MOVE GRACE-SOURCE TO GRACE-DEST.
+           DISPLAY GRACE-DEST.
+           MOVE "abc" TO GRACE-S-SOURCE.
+           MOVE GRACE-S-SOURCE TO GRACE-S-DEST.
+           DISPLAY GRACE-S-DEST.
            GOBACK.

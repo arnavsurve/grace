@@ -3,26 +3,26 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 GVAL PIC 9(6).
+       01 GRACE-GVAL PIC 9(2).
 
        PROCEDURE DIVISION.
        DECLARATIVES.
-
-       EMPTY SECTION.
-      *proc 'empty()'
+       GRACE-EMPTY SECTION.
+      *proc empty(): void
            EXIT SECTION.
-       SHOWVAL SECTION.
-      *proc 'showVal()'
+
+       GRACE-SHOWVAL SECTION.
+      *proc showVal(): void
            DISPLAY "Value in proc: ".
-           DISPLAY GVAL.
+           DISPLAY GRACE-GVAL.
            EXIT SECTION.
 
        END DECLARATIVES.
 
        MAIN SECTION.
-           MOVE 42 TO GVAL.
-           PERFORM EMPTY.
+           MOVE 42 TO GRACE-GVAL.
+           PERFORM GRACE-EMPTY.
            DISPLAY "Global value: ".
-           DISPLAY GVAL.
-           PERFORM SHOWVAL.
+           DISPLAY GRACE-GVAL.
+           PERFORM GRACE-SHOWVAL.
            GOBACK.

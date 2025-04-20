@@ -3,14 +3,13 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 GREETING PIC X(30).
-       01 MAX_VALUE PIC 9(6).
+       01 GRACE-MAX-VALUE PIC 9(3).
+       01 GRACE-GREETING PIC X(11).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE "Hello Const" TO GREETING.
-           DISPLAY GREETING.
-           MOVE 999 TO MAX_VALUE.
-           DISPLAY MAX_VALUE.
+           MOVE "Hello Const" TO GRACE-GREETING.
+           DISPLAY GRACE-GREETING.
+           MOVE 999 TO GRACE-MAX-VALUE.
+           DISPLAY GRACE-MAX-VALUE.
            GOBACK.

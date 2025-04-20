@@ -1,3 +1,0 @@
-// Explicit type, default width
-s: string = "Explicit String"
-print(s)

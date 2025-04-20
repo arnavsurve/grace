@@ -3,25 +3,26 @@
 
        PROCEDURE DIVISION.
        DECLARATIVES.
-
-       FIRST SECTION.
-      *proc 'first()'
+       GRACE-FIRST SECTION.
+      *proc first(): void
            DISPLAY "This is the first procedure".
            EXIT SECTION.
-       SECOND SECTION.
-      *proc 'second()'
+
+       GRACE-SECOND SECTION.
+      *proc second(): void
            DISPLAY "This is the second procedure".
            EXIT SECTION.
-       THIRD SECTION.
-      *proc 'third()'
+
+       GRACE-THIRD SECTION.
+      *proc third(): void
            DISPLAY "This is the third procedure".
            EXIT SECTION.
 
        END DECLARATIVES.
 
        MAIN SECTION.
-           PERFORM FIRST.
-           PERFORM SECOND.
-           PERFORM THIRD.
-           PERFORM FIRST.
+           PERFORM GRACE-FIRST.
+           PERFORM GRACE-SECOND.
+           PERFORM GRACE-THIRD.
+           PERFORM GRACE-FIRST.
            GOBACK.

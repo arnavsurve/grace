@@ -1,8 +1,8 @@
-proc inner() {
+proc inner(): void {
 	print("inside inner proc")
 }
 
-proc outer() {
+proc outer(): void {
 	print("outer proc start")
 	inner()
 	print("outer proc end")

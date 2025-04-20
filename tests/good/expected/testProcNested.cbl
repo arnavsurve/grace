@@ -3,15 +3,15 @@
 
        PROCEDURE DIVISION.
        DECLARATIVES.
-
-       INNER SECTION.
-      *proc 'inner()'
+       GRACE-INNER SECTION.
+      *proc inner(): void
            DISPLAY "inside inner proc".
            EXIT SECTION.
-       OUTER SECTION.
-      *proc 'outer()'
+
+       GRACE-OUTER SECTION.
+      *proc outer(): void
            DISPLAY "outer proc start".
-           PERFORM INNER.
+           PERFORM GRACE-INNER.
            DISPLAY "outer proc end".
            EXIT SECTION.
 
@@ -19,6 +19,6 @@
 
        MAIN SECTION.
            DISPLAY "main start".
-           PERFORM OUTER.
+           PERFORM GRACE-OUTER.
            DISPLAY "main end".
            GOBACK.

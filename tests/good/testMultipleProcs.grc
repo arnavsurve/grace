@@ -1,12 +1,12 @@
-proc first() {
+proc first(): void {
     print("This is the first procedure")
 }
 
-proc second() {
+proc second(): void {
     print("This is the second procedure")
 }
 
-proc third() {
+proc third(): void {
     print("This is the third procedure")
 }
 

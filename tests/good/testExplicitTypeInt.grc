@@ -1,3 +1,0 @@
-// Explicit type, default width
-a: int = 12345
-print(a)

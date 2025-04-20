@@ -3,7 +3,9 @@
 
 proc processData(id: int(8), name: string(25), active: int(1)): string(30) {
     print("Processing Data...")
-    // Cannot use id, name, active yet
+    print(id)
+    print(name)
+    print(active)
     return "Processed Record" // Fixed return
 }
 

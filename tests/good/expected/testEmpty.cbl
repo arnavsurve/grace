@@ -2,6 +2,5 @@
        PROGRAM-ID. TESTEMPTY.
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
            GOBACK.

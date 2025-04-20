@@ -3,35 +3,37 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 CF_A PIC 9(6).
-       01 CF_B PIC 9(6).
-       01 CF_C PIC 9(6).
-       01 CF_P PIC 9(6).
-       01 H_T PIC 9(13).
-       01 H_Y PIC 9(7).
-       01 H_Z PIC 9(7).
-       01 R PIC 9(6).
-       01 S PIC 9(6).
-       01 X PIC 9(6).
+       01 GRACE-CF-A PIC 9(2).
+       01 GRACE-CF-B PIC 9(3).
+       01 GRACE-CF-C PIC 9(3).
+       01 GRACE-CF-P PIC 9(3).
+       01 GRACE-H-T PIC 9(5).
+       01 GRACE-H-Y PIC 9(4).
+       01 GRACE-H-Z PIC 9(4).
+       01 GRACE-R PIC 9(2).
+       01 GRACE-S PIC 9(2).
+       01 GRACE-X PIC 9(3).
+
+      *GRACE Compiler Helper Variables
+       01 GRACE-TMP-INT PIC 9(6).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE 20 TO CF_A.
-           MOVE 100 TO CF_B.
-           MOVE 100 TO CF_C.
-           MOVE 26 TO CF_P.
-           DISPLAY CF_A.
-           DISPLAY CF_B.
-           DISPLAY CF_C.
-           DISPLAY CF_P.
-           MOVE 100 TO X.
-           COMPUTE H_Y = X * 5.
-           COMPUTE H_Z = 5 * X.
-           DISPLAY H_Y.
-           DISPLAY H_Z.
-           MOVE 10 TO R.
-           MOVE 20 TO S.
-           COMPUTE H_T = (R + S) * R.
-           DISPLAY H_T.
+           MOVE 20 TO GRACE-CF-A.
+           MOVE 100 TO GRACE-CF-B.
+           MOVE 100 TO GRACE-CF-C.
+           COMPUTE GRACE-CF-P = ( ( 6 ) ) + ( ( 20 ) ).
+           DISPLAY GRACE-CF-A.
+           DISPLAY GRACE-CF-B.
+           DISPLAY GRACE-CF-C.
+           DISPLAY GRACE-CF-P.
+           MOVE 100 TO GRACE-X.
+           COMPUTE GRACE-H-Y = GRACE-X * 5.
+           COMPUTE GRACE-H-Z = 5 * GRACE-X.
+           DISPLAY GRACE-H-Y.
+           DISPLAY GRACE-H-Z.
+           MOVE 10 TO GRACE-R.
+           MOVE 20 TO GRACE-S.
+           COMPUTE GRACE-H-T = ( ( GRACE-R + GRACE-S ) ) * GRACE-R.
+           DISPLAY GRACE-H-T.
            GOBACK.

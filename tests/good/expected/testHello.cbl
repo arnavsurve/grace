@@ -3,14 +3,13 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 GREETING PIC X(30).
-       01 NAME PIC X(30).
+       01 GRACE-GREETING PIC X(5).
+       01 GRACE-NAME PIC X(5).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE "Hello" TO GREETING.
-           MOVE "Arnav" TO NAME.
-           DISPLAY GREETING.
-           DISPLAY NAME.
+           MOVE "Hello" TO GRACE-GREETING.
+           MOVE "Arnav" TO GRACE-NAME.
+           DISPLAY GRACE-GREETING.
+           DISPLAY GRACE-NAME.
            GOBACK.

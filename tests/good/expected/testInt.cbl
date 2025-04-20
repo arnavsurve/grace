@@ -3,14 +3,13 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 ANOTHER PIC 9(6).
-       01 COUNT PIC 9(6).
+       01 GRACE-ANOTHER PIC 9(1).
+       01 GRACE-COUNT PIC 9(3).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE 123 TO COUNT.
-           DISPLAY COUNT.
-           MOVE 0 TO ANOTHER.
-           DISPLAY ANOTHER.
+           MOVE 123 TO GRACE-COUNT.
+           DISPLAY GRACE-COUNT.
+           MOVE 0 TO GRACE-ANOTHER.
+           DISPLAY GRACE-ANOTHER.
            GOBACK.

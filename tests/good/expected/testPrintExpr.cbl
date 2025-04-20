@@ -3,17 +3,17 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 A PIC 9(6).
-       01 B PIC 9(6).
+       01 GRACE-A PIC 9(3).
+       01 GRACE-B PIC 9(2).
+
+      *GRACE Compiler Helper Variables
        01 GRACE-TMP-INT PIC 9(6).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE 100 TO A.
-           MOVE 23 TO B.
-           COMPUTE GRACE-TMP-INT = A + B.
+           MOVE 100 TO GRACE-A.
+           MOVE 23 TO GRACE-B.
            DISPLAY GRACE-TMP-INT.
            DISPLAY 20.
-           DISPLAY A.
+           DISPLAY GRACE-A.
            GOBACK.

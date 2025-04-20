@@ -1,0 +1,3 @@
+// Explicit type and width
+s: string(15) = "Explicit String"
+print(s)

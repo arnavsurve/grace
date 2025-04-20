@@ -1,5 +1,0 @@
-// Explicit type and width
-str1: string(10) = "Short"
-str2: string(5) = "Exact"
-print(str1)
-print(str2)

@@ -3,16 +3,18 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 LARGEVALUE PIC 9(10).
-       01 RESULT PIC 9(11).
+       01 GRACE-LARGEVALUE PIC 9(10).
+       01 GRACE-RESULT PIC 9(10).
+
+      *GRACE Compiler Helper Variables
+       01 GRACE-TMP-INT PIC 9(6).
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
-           MOVE 2147483647 TO LARGEVALUE.
-           COMPUTE RESULT = LARGEVALUE + 1.
+           MOVE 2147483647 TO GRACE-LARGEVALUE.
+           COMPUTE GRACE-RESULT = GRACE-LARGEVALUE + 1.
            DISPLAY "Large integer: ".
-           DISPLAY LARGEVALUE.
+           DISPLAY GRACE-LARGEVALUE.
            DISPLAY "After adding 1: ".
-           DISPLAY RESULT.
+           DISPLAY GRACE-RESULT.
            GOBACK.

@@ -1,0 +1,3 @@
+// Explicit type and width
+a: int(5) = 12345
+print(a)

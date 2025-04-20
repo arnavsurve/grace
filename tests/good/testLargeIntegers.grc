@@ -1,5 +1,5 @@
-largeValue := 2147483647
-result := largeValue + 1
+largeValue : int(10) = 2147483647
+result : int(10) = largeValue + 1
 
 print("Large integer: ")
 print(largeValue)

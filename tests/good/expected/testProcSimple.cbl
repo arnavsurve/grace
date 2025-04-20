@@ -3,9 +3,8 @@
 
        PROCEDURE DIVISION.
        DECLARATIVES.
-
-       SAYHI SECTION.
-      *proc 'sayHi()'
+       GRACE-SAYHI SECTION.
+      *proc sayHi(): void
            DISPLAY "hi from proc!".
            EXIT SECTION.
 
@@ -13,6 +12,6 @@
 
        MAIN SECTION.
            DISPLAY "calling proc...".
-           PERFORM SAYHI.
+           PERFORM GRACE-SAYHI.
            DISPLAY "...proc called".
            GOBACK.

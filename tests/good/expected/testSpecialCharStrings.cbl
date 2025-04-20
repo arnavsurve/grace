@@ -2,7 +2,6 @@
        PROGRAM-ID. TESTSPECIALCHARSTRINGS.
 
        PROCEDURE DIVISION.
-
        MAIN SECTION.
            DISPLAY "Line 1".
            DISPLAY "Tabs and spaces".
