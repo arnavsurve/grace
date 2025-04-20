@@ -1122,15 +1122,38 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 		return fmt.Errorf("missing target symbol")
 	}
 
+	expectedTargetType := targetSymbol.Type
+	isProcReturnVar := false
+
+	if strings.HasPrefix(targetVarCobolName, sanitizeIdentifier(returnVarPrefix)) && targetSymbol.Type == "proc" {
+		isProcReturnVar = true
+		expectedTargetType = targetSymbol.ReturnType
+		if expectedTargetType == "" || expectedTargetType == "unknown" {
+			e.addError("Internal Error: Procedure symbol '%s' has missing or unknown return type info during assignment", targetSymbol.Name)
+			return fmt.Errorf("internal error: proc return type missing")
+		}
+	}
+
 	// --- Handle Record Assignment ---
-	if targetSymbol.RecordTypeSymbol != nil {
-		// Target is a record variable. RHS must also resolve to the *same* record type.
-		rhsType := rhsExpr.ResultType()
-		if rhsType != targetSymbol.RecordTypeSymbol.Name {
-			// Parser should have caught direct type mismatch. Check if RHS is unknown.
-			if rhsType != "unknown" {
-				e.addError("Internal Error: Record type mismatch in emitter (%s vs %s)", rhsType, targetSymbol.RecordTypeSymbol.Name)
-			}
+	// Needs to check against targetSymbol.RecordTypeSymbol (if assigning TO a record variable)
+	// OR targetSymbol.ReturnRecordTypeSymbol (if assigning TO a proc return var that is a record)
+	if (targetSymbol.RecordTypeSymbol != nil && !isProcReturnVar) || (targetSymbol.ReturnRecordTypeSymbol != nil && isProcReturnVar) {
+		targetRecordSymbol := targetSymbol.RecordTypeSymbol
+		if isProcReturnVar {
+			targetRecordSymbol = targetSymbol.ReturnRecordTypeSymbol
+		}
+
+		if targetRecordSymbol == nil {
+			// Should not happen if the outer condition was met, but safeguard
+			e.addError("Internal Error: Target record symbol link is nil for '%s'", targetVarCobolName)
+			return fmt.Errorf("internal error: nil target record symbol")
+		}
+
+		rhsType := rhsExpr.ResultType() // This should be the Record Name string
+
+		// Compare record type names for compatibility
+		if rhsType != targetRecordSymbol.Name {
+			e.addError("Internal Error: Record type mismatch in emitter (%s vs %s)", rhsType, targetRecordSymbol.Name)
 			return fmt.Errorf("record type mismatch")
 		}
 
@@ -1161,18 +1184,14 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 
 	// --- Handle Basic Type Assignment (int/string/file handles) ---
 	if targetSymbol.Type == "file" {
-		// e.addError("Cannot reassign file handles using '='. Use ':='.")
-		// return fmt.Errorf("file handle reassignment")
 		_, isInputExpr := rhsExpr.(*ast.InputExpression)
 		_, isOutputExpr := rhsExpr.(*ast.OutputExpression)
 
 		if isInputExpr || isOutputExpr {
-			// This assignment comes from `fh := input(...)` or `fh := output(...)`
-			// The actual COBOL work (SELECT/FD) is done elsewhere based on the declaration.
-			// There's NO actual MOVE/assignment statement needed in Procedure Division for this.
-			return nil // Successfully handled (by doing nothing here)
+			// Assignment from fh := input(...) or fh := output(...)
+			// No Procedure Division statement needed.
+			return nil
 		} else {
-			// It's an attempt to assign something *else* to a file handle variable (e.g., fh1 = fh2)
 			e.addError("Cannot reassign file handles using '='. Declare new handles with ':='.")
 			return fmt.Errorf("file handle reassignment attempt")
 		}
@@ -1182,6 +1201,12 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 	if binExpr, ok := rhsExpr.(*ast.BinaryExpression); ok && !isConstantFoldedInt(binExpr) && !isConstantFoldedString(binExpr) {
 		resultType := binExpr.ResultType()
 		if resultType == "int" {
+			// Ensure the target *expects* an int
+			if expectedTargetType != "int" {
+				targetDesc := getTargetDescription(targetVarCobolName, targetSymbol, isProcReturnVar)
+				e.addError("Emitter Error: Type mismatch: Cannot COMPUTE integer result into %s", targetDesc)
+				return fmt.Errorf("type mismatch for compute")
+			}
 			computeStr, err := e.emitExpressionForCompute(binExpr)
 			if err != nil {
 				return err
@@ -1189,10 +1214,17 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 			e.emitB(fmt.Sprintf("COMPUTE %s = %s", targetVarCobolName, computeStr))
 			return nil
 		} else if resultType == "string" {
+			// Ensure the target *expects* a string
+			if expectedTargetType != "string" {
+				targetDesc := getTargetDescription(targetVarCobolName, targetSymbol, isProcReturnVar)
+				e.addError("Emitter Error: Type mismatch: Cannot STRING result into %s", targetDesc)
+				return fmt.Errorf("type mismatch for string concat")
+			}
 			// Direct STRING into target var
 			err := e.emitStringConcatenation(targetVarCobolName, binExpr)
 			return err
 		}
+		// If binary expression result type is neither int nor string, fall through to MOVE (will likely fail type check)
 	}
 
 	// --- Fallback: Evaluate RHS and MOVE ---
@@ -1210,16 +1242,17 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 		return nil
 	}
 
-	// Type check (final sanity check)
+	// Type check (final sanity check using the determined expectedTargetType)
 	rhsType := rhsExpr.ResultType()
 	if rhsType == "void" {
 		err = fmt.Errorf("cannot assign void result to %s", targetVarCobolName)
 		e.addError("Emitter Error: %v", err)
 		return err
 	}
-	if targetSymbol.Type != "unknown" && rhsType != "unknown" && targetSymbol.Type != rhsType {
-		// This check might be redundant if parser is correct, but safe.
-		err = fmt.Errorf("type mismatch assigning %s to %s (%s)", rhsType, targetVarCobolName, targetSymbol.Type)
+	// Compare RHS type against the *expected* type of the target (could be variable type or proc return type)
+	if expectedTargetType != "unknown" && rhsType != "unknown" && expectedTargetType != rhsType {
+		targetDesc := getTargetDescription(targetVarCobolName, targetSymbol, isProcReturnVar)
+		err = fmt.Errorf("type mismatch assigning %s to %s", rhsType, targetDesc)
 		e.addError("Emitter Error: %v", err)
 		return err
 	}
@@ -1227,6 +1260,16 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 	// Default: MOVE the result (literal, var, temp-var, return-var)
 	e.emitB(fmt.Sprintf(`MOVE %s TO %s`, sourceEntity, targetVarCobolName))
 	return nil
+}
+
+// Helper function to get a descriptive string for the assignment target
+func getTargetDescription(cobolName string, symbol *symbols.SymbolInfo, isReturnVar bool) string {
+	if isReturnVar && symbol.Type == "proc" {
+		// Use the procedure's return type for the description
+		return fmt.Sprintf("return value of procedure '%s' (expecting %s)", symbol.Name, symbol.ReturnType)
+	}
+	// Otherwise, describe the variable using its own type info
+	return fmt.Sprintf("variable %s (type %s)", cobolName, symbol.Type)
 }
 
 func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) {
