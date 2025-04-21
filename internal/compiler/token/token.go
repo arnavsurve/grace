@@ -15,6 +15,7 @@ const (
 	TokenSlash    TokenType = "SLASH"    // / (division)
 	TokenColon    TokenType = "COLON"    // :
 	TokenComma    TokenType = "COMMA"    // ,
+	TokenDot      TokenType = "DOT"      // .
 
 	// Keywords
 	TokenPrint  TokenType = "PRINT"  // print

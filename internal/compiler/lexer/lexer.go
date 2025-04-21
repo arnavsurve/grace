@@ -120,6 +120,10 @@ func (l *Lexer) NextToken() token.Token {
 		tok = l.newToken(token.TokenComma, string(l.ch), startLine, startCol)
 		l.readChar() // Consume the comma
 		return tok   // Return immediately
+	case '.': // NEW
+		tok = l.newToken(token.TokenDot, string(l.ch), startLine, startCol)
+		l.readChar() // Consume '.'
+		return tok
 	case ':':
 		if l.peekChar() == '=' {
 			ch := l.ch

@@ -139,19 +139,19 @@ func (ds *DeclarationStatement) String() string {
 	return out.String()
 }
 
-// ReassignmentStatement -> x = 456
+// ReassignmentStatement -> x = 456 or person.name = "Alice"
 type ReassignmentStatement struct {
-	Token token.Token // =
-	Name  *Identifier
-	Value Expression
+	Token  token.Token // =
+	Target Expression  // Can be *Identifier or *FieldAccessExpression
+	Value  Expression
 }
 
 func (rs *ReassignmentStatement) statementNode()       {}
 func (rs *ReassignmentStatement) TokenLiteral() string { return rs.Token.Literal } // Literal is "="
 func (rs *ReassignmentStatement) String() string {
 	var out bytes.Buffer
-	if rs.Name != nil {
-		out.WriteString(rs.Name.String())
+	if rs.Target != nil {
+		out.WriteString(rs.Target.String())
 	}
 	out.WriteString(" " + rs.TokenLiteral() + " ") // " = "
 	if rs.Value != nil {
@@ -654,6 +654,38 @@ func (oe *OutputExpression) ResultWidth() int                       { return 0 }
 func (oe *OutputExpression) GetToken() token.Token                  { return oe.Token }
 func (oe *OutputExpression) GetResolvedSymbol() *symbols.SymbolInfo { return oe.ResolvedFileInfo }
 
+// FieldAccessExpression represents a record field access like `record.field`
+type FieldAccessExpression struct {
+	Token         token.Token        // The '.' token
+	Record        Expression         // Expression evaluating to the record variable (e.g., *ast.Identifier)
+	Field         *Identifier        // The field being accessed
+	ResolvedField *symbols.FieldInfo // Resolved field info (set by parser)
+}
+
+func (fe *FieldAccessExpression) expressionNode()      {}
+func (fe *FieldAccessExpression) TokenLiteral() string { return fe.Token.Literal }
+func (fe *FieldAccessExpression) String() string {
+	return fmt.Sprintf("(%s.%s)", fe.Record.String(), fe.Field.String())
+}
+func (fe *FieldAccessExpression) GetToken() token.Token { return fe.Token }
+func (fe *FieldAccessExpression) ResultType() string {
+	if fe.ResolvedField != nil {
+		return fe.ResolvedField.Type
+	}
+	return "unknown"
+}
+func (fe *FieldAccessExpression) ResultWidth() int {
+	if fe.ResolvedField != nil {
+		return fe.ResolvedField.Width
+	}
+	return 0
+}
+func (fe *FieldAccessExpression) GetResolvedSymbol() *symbols.SymbolInfo {
+	// Accessing a field doesn't yield a top-level symbol directly
+	// We *could* return the symbol of the field's type if needed, but nil seems appropriate
+	return nil
+}
+
 // Helper for pretty printing AST to bless it with my chud eyes
 func PrintAST(node Node, indent string) {
 	if node == nil {
@@ -694,7 +726,8 @@ func PrintAST(node Node, indent string) {
 
 	case *ReassignmentStatement:
 		fmt.Println(indent + "ReassignmentStatement")
-		fmt.Println(indent+"  Name:", n.Name.String())
+		fmt.Println(indent + "  Target:")
+		PrintAST(n.Target, indent+"    ")
 		fmt.Println(indent + "  Value:")
 		PrintAST(n.Value, indent+"    ")
 
@@ -791,6 +824,17 @@ func PrintAST(node Node, indent string) {
 		fmt.Printf("%sInputExpression File: %s, Record: %s\n", indent, n.SystemFileName.String(), n.RecordTypeName.String())
 	case *OutputExpression:
 		fmt.Printf("%sOutputExpression File: %s, Record: %s\n", indent, n.SystemFileName.String(), n.RecordTypeName.String())
+			
+	case *FieldAccessExpression:
+		fieldType := "unknown"
+		fieldWidth := 0
+		if n.ResolvedField != nil {
+			fieldType = n.ResolvedField.Type
+			fieldWidth = n.ResolvedField.Width
+		}
+		fmt.Printf("%sFieldAccessExpression Field: %s (Type: %s, Width: %d)\n", indent, n.Field.String(), fieldType, fieldWidth)
+		fmt.Println(indent + "  Record:")
+		PrintAST(n.Record, indent+"    ")
 
 	default:
 		fmt.Printf("%s<unknown node type: %T>\n", indent, n)

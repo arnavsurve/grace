@@ -158,7 +158,6 @@ func (e *Emitter) emitB(line string) {
 				return
 			}
 		}
-		// If not a simple DISPLAY "literal", fall through to standard handling
 	}
 
 	// --- Special Handling for MOVE String Literals ---
@@ -267,7 +266,6 @@ func (e *Emitter) emitB(line string) {
 			}
 			return // Finished handling multi-line MOVE
 		}
-		// If parsing MOVE "..." TO ... failed, fall through
 	}
 
 	// --- Fallback: Standard line handling (add period if needed) ---
@@ -297,12 +295,32 @@ func (e *Emitter) emitB(line string) {
 		finalLine += "."
 	}
 
-	// Check length before writing (basic safety for non-handled lines)
-	if !strings.Contains(finalLine, "\n") && len(areaBIndent+finalLine) > cobolLineEndCol {
-		e.addError("Emitter Warning: Generated COBOL line may exceed %d columns: %s", cobolLineEndCol, areaBIndent+finalLine)
-	}
+	// --- Check length and attempt COMPUTE break ---
+	fullLineWithIndentAndPeriod := areaBIndent + finalLine
+	if len(fullLineWithIndentAndPeriod) > cobolLineEndCol {
+		// Check if it's a COMPUTE statement we can easily break
+		if strings.HasPrefix(trimmedLine, "COMPUTE ") {
+			parts := strings.SplitN(finalLine, "=", 2) // Split on first '=' (including period if added)
+			if len(parts) == 2 {
+				part1 := strings.TrimSpace(parts[0]) + "= " // Add space after = for readability
+				part2 := strings.TrimSpace(parts[1])        // This part will include the final period
 
-	e.builder.WriteString(areaBIndent + finalLine + "\n")
+				// Check if BOTH parts would now fit reasonably (a heuristic)
+				// Part 1 needs indent, part 2 needs continuation prefix + space
+				if len(areaBIndent+part1) <= cobolLineEndCol && len(continuationPrefix+" "+part2) <= cobolLineEndCol {
+					e.builder.WriteString(areaBIndent + part1 + "\n")
+					e.builder.WriteString(continuationPrefix + " " + part2 + "\n") // Write part2 with period
+					return                                                         // Handled the break
+				}
+			}
+		}
+		// If not a COMPUTE or break doesn't help/fit, fall back to warning
+		e.addError("Emitter Warning: Generated COBOL line exceeds %d columns (break attempted): %s", cobolLineEndCol, fullLineWithIndentAndPeriod)
+		e.builder.WriteString(fullLineWithIndentAndPeriod + "\n") // Write long line anyway
+	} else {
+		// Line fits, write as usual
+		e.builder.WriteString(fullLineWithIndentAndPeriod + "\n")
+	}
 }
 
 func (e *Emitter) emitComment(comment string) {
@@ -404,60 +422,6 @@ func (e *Emitter) analyzeExpression(expr ast.Expression) {
 		// Could analyze record type usage here if needed later
 	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral:
 		// Base cases
-	}
-}
-
-// New helper to analyze an expression AND return if it requires an INT temp
-// This is separate from the main analyzeExpression which just sets global flags
-func (e *Emitter) analyzeExpressionRequiresTempInt(expr ast.Expression) bool {
-	if expr == nil {
-		return false
-	}
-	switch ex := expr.(type) {
-	case *ast.BinaryExpression:
-		if ex.ResultType() == "int" && !isConstantFoldedInt(ex) {
-			return true // This specific expression needs a temp
-		}
-		// Check children recursively
-		return e.analyzeExpressionRequiresTempInt(ex.Left) || e.analyzeExpressionRequiresTempInt(ex.Right)
-	case *ast.GroupedExpression:
-		return e.analyzeExpressionRequiresTempInt(ex.Expression)
-	case *ast.ProcCallExpression:
-		for _, arg := range ex.Arguments {
-			if e.analyzeExpressionRequiresTempInt(arg) {
-				e.needsTempInt = true // Set global flag too
-			}
-		}
-		return false // The call itself doesn't require *this specific* print mechanism temp
-	// Base cases don't require temps for print formatting
-	case *ast.Identifier, *ast.IntegerLiteral:
-		return false
-		// Add other cases as needed
-	default:
-		return false
-	}
-}
-
-// New helper to analyze an expression AND return if it requires a STRING temp
-func (e *Emitter) analyzeExpressionRequiresTempString(expr ast.Expression) bool {
-	if expr == nil {
-		return false
-	}
-	switch ex := expr.(type) {
-	case *ast.BinaryExpression:
-		if ex.ResultType() == "string" && !isConstantFoldedString(ex) {
-			return true // This specific expression needs a temp
-		}
-		// Check children recursively
-		return e.analyzeExpressionRequiresTempString(ex.Left) || e.analyzeExpressionRequiresTempString(ex.Right)
-	case *ast.GroupedExpression:
-		return e.analyzeExpressionRequiresTempString(ex.Expression)
-		// Add ProcCall check similar to Int if needed
-	// Base cases don't require temps for print formatting
-	case *ast.Identifier, *ast.StringLiteral:
-		return false
-	default:
-		return false
 	}
 }
 
@@ -930,6 +894,28 @@ func (e *Emitter) evaluateSubExpression(expr ast.Expression) (string, error) {
 		}
 		return e.getScopedCobolName(node.Value), nil
 
+	case *ast.FieldAccessExpression:
+		if node.ResolvedField == nil {
+			err := fmt.Errorf("unresolved field in arithmetic")
+			e.addError("Internal Error: %v", err)
+			return "", err
+		}
+		if node.ResolvedField.Type != "int" { // Check if field type is valid for arithmetic
+			err := fmt.Errorf("field '%s' (type %s) used in arithmetic, expected 'int'", node.Field.Value, node.ResolvedField.Type)
+			e.addError("Emitter Error: %v", err)
+			return "", err
+		}
+		recordIdent, ok := node.Record.(*ast.Identifier)
+		if !ok {
+			err := fmt.Errorf("complex field access base in arithmetic")
+			e.addError("Emitter Error: %v", err)
+			return "", err
+		}
+		recordVarCobolName := e.getScopedCobolName(recordIdent.Value)
+		fieldCobolName := sanitizeIdentifier(node.Field.Value)
+		qualifiedName := fmt.Sprintf("%s OF %s", fieldCobolName, recordVarCobolName)
+		return qualifiedName, nil
+
 	case *ast.IntegerLiteral:
 		return fmt.Sprintf("%d", node.Value), nil
 
@@ -1324,14 +1310,18 @@ func (e *Emitter) emitPrint(stmt *ast.PrintStatement) {
 		if isTempInt { // Format temporary integer vars using DISPLAY FUNCTION TRIM
 			if hasDisplayField {
 				e.emitB(fmt.Sprintf("MOVE %s TO %s", valueStr, dispTempName))
+
 				e.emitB(fmt.Sprintf("DISPLAY FUNCTION TRIM(%s)", dispTempName))
 			} else {
 				e.addError("Internal Emitter Error: TMP-DISPLAY required for %s but not declared.", valueStr)
+
 				e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr)) // Fallback to direct display
 			}
 		} else if isTempStr { // Format temporary string vars using FUNCTION TRIM
+
 			e.emitB(fmt.Sprintf("DISPLAY FUNCTION TRIM(%s)", tempStringName))
 		} else { // Standard display for other variables
+
 			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
 		}
 	}
@@ -1344,13 +1334,13 @@ func isNumberedTempIntVarName(name string) bool {
 	if !strings.HasPrefix(name, prefix) {
 		return false
 	}
-	
+
 	// Extract and check number part
 	numPart := name[len(prefix):]
-	
+
 	// If the remaining part can be parsed as an integer, it's a valid temp int var name
 	_, err := strconv.Atoi(numPart)
-	return err == nil 
+	return err == nil
 }
 
 func (e *Emitter) emitDeclaration(stmt *ast.DeclarationStatement) {
@@ -1384,17 +1374,42 @@ func (e *Emitter) emitDeclaration(stmt *ast.DeclarationStatement) {
 }
 
 func (e *Emitter) emitReassignment(stmt *ast.ReassignmentStatement) {
-	if stmt == nil || stmt.Name == nil || stmt.Value == nil {
-		return
-	}
-	targetVarCobolName := e.getScopedCobolName(stmt.Name.Value)
-	if stmt.Name.Symbol == nil {
-		e.addError("Internal Error: Reassignment AST node missing symbol for '%s'", stmt.Name.Value)
+	if stmt == nil || stmt.Target == nil || stmt.Value == nil {
 		return
 	}
 
-	err := e.emitAssignment(targetVarCobolName, stmt.Value, stmt.Name.Symbol) // Pass target symbol info
-	_ = err                                                                   // Error handled internally
+	// --- Emit LHS target to get COBOL name (simple or qualified) ---
+	targetNameStr, isLit, err := e.emitExpressionForResult(stmt.Target)
+	if err != nil || isLit || targetNameStr == "" {
+		e.addError("Internal Error: Invalid target in reassignment emitter for %s", stmt.Target.String())
+		return
+	}
+
+	// --- Get Symbol Info for the specific target (field or variable) ---
+	// This is needed for emitAssignment's checks/logic
+	var targetFieldOrVarSymbol *symbols.SymbolInfo
+	if ident, ok := stmt.Target.(*ast.Identifier); ok {
+		targetFieldOrVarSymbol = ident.Symbol // Symbol of the variable itself
+	} else if fa, ok := stmt.Target.(*ast.FieldAccessExpression); ok {
+		if fa.ResolvedField != nil {
+			// Use field's type/width for assignment checks
+			targetFieldOrVarSymbol = &symbols.SymbolInfo{
+				Type:    fa.ResolvedField.Type,
+				Width:   fa.ResolvedField.Width,
+				IsConst: false, // Fields are assignable
+			}
+		}
+	}
+
+	if targetFieldOrVarSymbol == nil {
+		e.addError("Internal Error: Could not determine target symbol info in reassignment emitter for %s", stmt.Target.String())
+		return
+	}
+
+	// Call emitAssignment with the COBOL target name string and the symbol info
+	// representing the thing being assigned TO (field or variable).
+	err = e.emitAssignment(targetNameStr, stmt.Value, targetFieldOrVarSymbol)
+	_ = err // error handled internally
 }
 
 // --- Core Expression/Assignment Helpers ---
@@ -1512,6 +1527,22 @@ func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, er
 			return "", false, err
 		}
 		return resultVar, false, nil // Return name of WS return variable
+
+	case *ast.FieldAccessExpression:
+		if node.ResolvedField == nil {
+			e.addError("Internal Error: Field access lacks resolved info: %s", node.String())
+			return "", false, fmt.Errorf("unresolved field")
+		}
+		// Assume node.Record is *ast.Identifier for now
+		recordIdent, ok := node.Record.(*ast.Identifier)
+		if !ok {
+			e.addError("Emitter Limitation: Field access only supported on direct variable identifiers currently.")
+			return "", false, fmt.Errorf("complex field access base")
+		}
+		recordVarCobolName := e.getScopedCobolName(recordIdent.Value)
+		fieldCobolName := sanitizeIdentifier(node.Field.Value)
+		qualifiedName := fmt.Sprintf("%s OF %s", fieldCobolName, recordVarCobolName)
+		return qualifiedName, false, nil // It's a variable reference
 
 	case *ast.InputExpression, *ast.OutputExpression:
 		// These expressions create file handles but are typically used with `:=`
@@ -1716,6 +1747,29 @@ func (e *Emitter) emitExpressionForCompute(expr ast.Expression) (string, error) 
 
 	case *ast.IntegerLiteral:
 		return fmt.Sprintf("%d", node.Value), nil
+
+	case *ast.FieldAccessExpression:
+		// Similar logic to emitExpressionForResult, generate qualified name
+		if node.ResolvedField == nil {
+			err := fmt.Errorf("unresolved field in arithmetic")
+			e.addError("Internal Error: %v", err)
+			return "", err
+		}
+		if node.ResolvedField.Type != "int" { // Check if field type is valid for arithmetic
+			err := fmt.Errorf("field '%s' (type %s) used in arithmetic, expected 'int'", node.Field.Value, node.ResolvedField.Type)
+			e.addError("Emitter Error: %v", err)
+			return "", err
+		}
+		recordIdent, ok := node.Record.(*ast.Identifier)
+		if !ok {
+			err := fmt.Errorf("complex field access base in arithmetic")
+			e.addError("Emitter Error: %v", err)
+			return "", err
+		}
+		recordVarCobolName := e.getScopedCobolName(recordIdent.Value)
+		fieldCobolName := sanitizeIdentifier(node.Field.Value)
+		qualifiedName := fmt.Sprintf("%s OF %s", fieldCobolName, recordVarCobolName)
+		return qualifiedName, nil
 
 	case *ast.InputExpression, *ast.OutputExpression:
 		err := fmt.Errorf("type %T used in arithmetic expression", node)

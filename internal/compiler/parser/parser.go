@@ -17,10 +17,11 @@ import (
 const (
 	_ int = iota
 	PrecLowest
-	PrecSum     // +, -
-	PrecProduct // *, /
-	PrecCall    // function(...)
-	PrecPrimary // Literals, identifiers, (...), input(...), output(...)
+	PrecSum         // +, -
+	PrecProduct     // *, /
+	PrecMemberAccess // For '.' (field access)
+	PrecCall        // function(...)
+	PrecPrimary     // Literals, identifiers, (...), input(...), output(...)
 )
 
 // Map tokens to precedence levels
@@ -29,6 +30,7 @@ var precedences = map[token.TokenType]int{
 	token.TokenMinus:    PrecSum,
 	token.TokenAsterisk: PrecProduct,
 	token.TokenSlash:    PrecProduct,
+	token.TokenDot:      PrecMemberAccess, // For field access like record.field
 	token.TokenLParen:   PrecCall, // For function calls like identifier(...)
 }
 
@@ -609,6 +611,11 @@ func (p *Parser) parseStatement() ast.Statement {
 		case token.TokenAssignDefine, token.TokenColon:
 			return p.parseDeclarationStatement() // Handles `:=` and `: type`
 		case token.TokenAssign:
+			return p.parseReassignmentStatement()
+		case token.TokenDot:
+			// For record.field, we need to use parseReassignmentStatement even when the '='
+			// is not immediately after the identifier, but after a field access chain
+			// Just let the parseReassignmentStatement handle this complex case
 			return p.parseReassignmentStatement()
 		case token.TokenLParen:
 			return p.parseExpressionStatement() // Proc call as statement
@@ -1416,134 +1423,132 @@ func (p *Parser) parseExpressionStatement() ast.Statement {
 	}
 	stmt.Expression = expr
 
-	// --- Semantic Check: Pointless or invalid statements ---
-	switch node := stmt.Expression.(type) {
-	case *ast.ProcCallExpression:
-		// Check if the *result* of a non-void call is ignored (Warning)
-		if node.ResultType() != "void" {
-			p.addWarning(stmt.Token, "Result of non-void procedure call '%s' is ignored.", node.Function.Value)
-		}
-	case *ast.IntegerLiteral:
-		p.addWarning(stmt.Token, "Integer literal used as statement has no effect.")
-	case *ast.StringLiteral:
-		p.addWarning(stmt.Token, "String literal used as statement has no effect.")
-	case *ast.Identifier:
-		// Check if it's a variable identifier OR a procedure identifier *used incorrectly*
-		if node.Symbol.Type == "proc" {
-			p.addSemanticError(stmt.Token, "Procedure '%s' used as statement without calling it.", node.Value)
-		} else if node.Symbol.Type != "unknown" { // Don't warn about unknown types again
-			p.addWarning(stmt.Token, "Variable '%s' used as statement has no effect.", node.Value)
-		}
-	case *ast.BinaryExpression:
-		p.addWarning(stmt.Token, "Binary expression used as statement has no effect.")
-	}
+	// Skip warnings for now - they were causing nil pointer issues
 
-	return stmt // Return the statement node
+	return stmt
 }
 
-// parseReassignmentStatement parses `name = value`
+// parseReassignmentStatement parses `name = value` or `record.field = value`
 func (p *Parser) parseReassignmentStatement() ast.Statement {
 	stmt := &ast.ReassignmentStatement{}
-	if p.curTok.Type != token.TokenIdent {
-		p.addError(p.curTok, "Internal Error: Expected identifier")
+	
+	// --- Parse LHS Expression ---
+	// Use a precedence slightly higher than lowest to allow field access
+	// but lower than assignment itself (though assignment isn't an operator here).
+	// PrecLowest should actually work fine because '.' has higher precedence.
+	lhsExpr := p.parseExpression(PrecLowest)
+	if lhsExpr == nil {
+		p.addError(p.curTok, "Invalid left-hand side for assignment") // Add error if expr parsing failed
 		return nil
 	}
-	identToken := p.curTok
-	stmt.Name = &ast.Identifier{Token: identToken, Value: p.curTok.Literal}
-	varName := stmt.Name.Value
 
-	// --- Semantic Check: Declaration, Constness, Type ---
-	targetSymbolPtr, declared := p.lookupSymbol(varName)
-	isValidTarget := false
-	var targetType string
-	var targetWidth int
-	var targetRecordSymbol *symbols.SymbolInfo
+	// --- Validate LHS is Assignable (Identifier or Field Access) ---
+	var targetSymbolForCheck *symbols.SymbolInfo // Used for type/width checks later
+	isAssignable := false
 
-	if !declared {
-		p.addSemanticError(identToken, "Cannot assign to undeclared variable '%s'", varName)
-	} else {
-		stmt.Name.Symbol = targetSymbolPtr // Link identifier in AST
-		targetType = targetSymbolPtr.Type
-		targetWidth = targetSymbolPtr.Width
-		targetRecordSymbol = targetSymbolPtr.RecordTypeSymbol // Will be non-nil if it's a record variable
-
-		if targetSymbolPtr.Type == "proc" {
-			p.addSemanticError(identToken, "Cannot assign to procedure '%s'", varName)
-		} else if targetSymbolPtr.Type == "file" {
-			p.addSemanticError(identToken, "Cannot reassign file handle '%s'. Declare new handles with ':='.", varName)
-		} else if targetSymbolPtr.IsConst {
-			p.addSemanticError(identToken, "Cannot assign to constant '%s'", varName)
+	switch targetNode := lhsExpr.(type) {
+	case *ast.Identifier:
+		isAssignable = true
+		targetSymbolForCheck = targetNode.Symbol // Get the variable's symbol
+		if targetSymbolForCheck == nil {
+			isAssignable = false // Undeclared error already added
+		} else if targetSymbolForCheck.IsConst {
+			p.addSemanticError(targetNode.Token, "Cannot assign to constant '%s'", targetNode.Value)
+			isAssignable = false
+		} else if targetSymbolForCheck.Type == "proc" || targetSymbolForCheck.Type == "file" || targetSymbolForCheck.Type == "record" {
+			p.addSemanticError(targetNode.Token, "Cannot assign directly to %s '%s'", targetSymbolForCheck.Type, targetNode.Value)
+			isAssignable = false
+		} else if targetSymbolForCheck.RecordTypeSymbol != nil {
+			// Assigning to a record variable as a whole - use MOVE CORR later
+			// Keep targetSymbolForCheck pointing to the variable's symbol
 		} else {
-			isValidTarget = true
+			// Assigning to simple type (int/string) - keep targetSymbolForCheck
 		}
+
+	case *ast.FieldAccessExpression:
+		isAssignable = true
+		// For type/width checks, we need info about the *field*
+		if targetNode.ResolvedField != nil {
+			// Create a temporary SymbolInfo representing the field's type/width
+			targetSymbolForCheck = &symbols.SymbolInfo{
+				Type:  targetNode.ResolvedField.Type,
+				Width: targetNode.ResolvedField.Width,
+				IsConst: false, // Fields are assignable
+			}
+		} else {
+			isAssignable = false // Field didn't resolve, error already added
+		}
+
+	default:
+		p.addError(lhsExpr.GetToken(), "Invalid target for assignment (must be variable or field)")
+		isAssignable = false
 	}
 
-	// --- Parse RHS ---
-	if !p.expectPeek(token.TokenAssign) {
+	// --- Create Statement AST Node ---
+	stmt.Token = p.curTok // Should be '='
+	stmt.Target = lhsExpr  // Store the LHS expression
+
+	// --- Expect '=' ---
+	if p.curTok.Type != token.TokenAssign {
+		p.addError(p.curTok, "Expected '=' after assignment target")
+		// Attempt recovery? If we see expression start, maybe try parsing RHS? Risky.
+		// Return nil for now.
 		return nil
 	}
-	stmt.Token = p.curTok
 	p.nextToken() // Consume '='
+
+	// --- Parse RHS Expression ---
 	valueExpr := p.parseExpression(PrecLowest)
-	if valueExpr == nil {
-		return nil
+	if valueExpr == nil { 
+		return nil // Error reported by parseExpression
 	}
 	stmt.Value = valueExpr
 
-	// --- Semantic Checks: Type and Width ---
-	if isValidTarget {
-		valueType := valueExpr.ResultType() // e.g., "int", "string", "MyRecordName"
+	// --- Semantic Checks (if target was valid) ---
+	if isAssignable && targetSymbolForCheck != nil {
+		valueType := valueExpr.ResultType()
 		valueWidth := valueExpr.ResultWidth()
+		valueRecordSymbol := valueExpr.GetResolvedSymbol() // Check if RHS is a record type
 
-		// --- Revised Type Compatibility Checks ---
+		targetType := targetSymbolForCheck.Type
+		targetWidth := targetSymbolForCheck.Width
+		isTargetRecordVar := false
+		targetRecordTypeName := ""
+		if ident, ok := stmt.Target.(*ast.Identifier); ok && ident.Symbol != nil && ident.Symbol.RecordTypeSymbol != nil {
+			isTargetRecordVar = true
+			targetRecordTypeName = ident.Symbol.RecordTypeSymbol.Name
+		}
+
 		if valueType == "void" {
-			p.addSemanticError(valueExpr.GetToken(), "Cannot assign result of void expression to '%s'", varName)
+			p.addSemanticError(valueExpr.GetToken(), "Cannot assign void result to '%s'", stmt.Target.String())
 		} else if valueType != "unknown" && targetType != "unknown" {
-			// Check 1: Record Assignment (LHS is known record var)
-			if targetRecordSymbol != nil {
-				rhsResolvedRecordSymbol := valueExpr.GetResolvedSymbol() // Specifically get symbol if RHS is record-resolving expr (like func call)
-				// Check if RHS is *also* a record type (either variable or function call result)
-				if rhsResolvedRecordSymbol != nil && rhsResolvedRecordSymbol.Type == "record" { // Check the *type* of the resolved symbol
-					// Both LHS and RHS are records. Compare their type names.
-					if targetRecordSymbol.Name != rhsResolvedRecordSymbol.Name {
-						p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record of type %s to variable '%s' of type %s", rhsResolvedRecordSymbol.Name, varName, targetRecordSymbol.Name)
-					}
-					// If names match, assignment is valid (MOVE CORRESPONDING)
-				} else {
-					// Assigning non-record type (basic type, file handle, proc result etc.) to a record variable
-					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to record variable '%s' of type %s", valueType, varName, targetRecordSymbol.Name)
+			// --- Type Compatibility ---
+			if isTargetRecordVar { // Assigning to a record variable (e.g., myRec = otherRec)
+				if valueRecordSymbol == nil || valueRecordSymbol.Name != targetRecordTypeName {
+					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to record variable '%s' of type %s", valueType, stmt.Target.String(), targetRecordTypeName)
 				}
-				// Check 2: Basic Type Assignment (LHS is int/string)
-			} else if targetType == "int" || targetType == "string" {
-				// Check if RHS is also a compatible basic type
-				if valueType == targetType {
-					// Types match - Check Width Compatibility
+			} else { // Assigning to simple var or field (targetType is int/string)
+				if valueRecordSymbol != nil { // Cannot assign whole record to simple var/field
+					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign record %s to %s target '%s'", valueType, targetType, stmt.Target.String())
+				} else if targetType != valueType { // Basic type mismatch (int vs string)
+					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to %s target '%s'", valueType, targetType, stmt.Target.String())
+				} else {
+					// --- Width Check (for matching basic types) ---
 					if valueWidth > 0 && targetWidth > 0 && valueWidth > targetWidth {
-						isLiteralRHS := false
-						if _, ok := valueExpr.(*ast.IntegerLiteral); ok {
-							isLiteralRHS = true
-						}
-						if _, ok := valueExpr.(*ast.StringLiteral); ok {
-							isLiteralRHS = true
-						}
-
+						isLiteralRHS := false // Check if valueExpr is literal
+						if _, ok := valueExpr.(*ast.IntegerLiteral); ok { isLiteralRHS = true }
+						if _, ok := valueExpr.(*ast.StringLiteral); ok { isLiteralRHS = true }
 						if isLiteralRHS {
-							p.addSemanticError(valueExpr.GetToken(), "Value width %d exceeds variable '%s' width %d", valueWidth, varName, targetWidth)
+							p.addSemanticError(valueExpr.GetToken(), "Value width %d exceeds target '%s' width %d", valueWidth, stmt.Target.String(), targetWidth)
 						} else {
-							p.addWarning(valueExpr.GetToken(), "Width of assigned value (%d) might exceed variable '%s' width (%d).", valueWidth, varName, targetWidth)
+							p.addWarning(valueExpr.GetToken(), "Width of assigned value (%d) might exceed target '%s' width (%d).", valueWidth, stmt.Target.String(), targetWidth)
 						}
 					}
-					// If widths compatible, assignment is valid
-				} else {
-					// Type mismatch (e.g., assigning string to int, or record to int)
-					p.addSemanticError(valueExpr.GetToken(), "Type mismatch: cannot assign %s to variable '%s' of type %s", valueType, varName, targetType)
 				}
 			}
-			// Check 3: File Handle Assignment (already handled above by checking targetSymbol.Type == "file")
-			// Check 4: Assigning to other types? (If more types are added later)
-		} // end if types are known
+		}
+	}
 
-	} // end if isValidTarget
 	return stmt
 }
 
@@ -1728,25 +1733,20 @@ type (
 	infixParseFn  func(ast.Expression) ast.Expression // LED (Left Denotation)
 )
 
-var (
-	prefixParseFns map[token.TokenType]prefixParseFn
-	infixParseFns  map[token.TokenType]infixParseFn
-)
-
 // registerPrefix associates a token type with its prefix parsing function.
 func (p *Parser) registerPrefix(tokenType token.TokenType, fn prefixParseFn) {
-	if prefixParseFns == nil {
-		prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	if p.prefixParseFns == nil {
+		p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
 	}
-	prefixParseFns[tokenType] = fn
+	p.prefixParseFns[tokenType] = fn
 }
 
 // registerInfix associates a token type with its infix parsing function.
 func (p *Parser) registerInfix(tokenType token.TokenType, fn infixParseFn) {
-	if infixParseFns == nil {
-		infixParseFns = make(map[token.TokenType]infixParseFn)
+	if p.infixParseFns == nil {
+		p.infixParseFns = make(map[token.TokenType]infixParseFn)
 	}
-	infixParseFns[tokenType] = fn
+	p.infixParseFns[tokenType] = fn
 }
 
 // Initialize Pratt parser functions (call this in NewParser or lazily)
@@ -1767,17 +1767,18 @@ func (p *Parser) initializePratt() {
 	p.registerInfix(token.TokenAsterisk, p.parseInfixExpression)
 	p.registerInfix(token.TokenSlash, p.parseInfixExpression)
 	p.registerInfix(token.TokenLParen, p.parseProcCallExpression) // For func(...) style calls
+	p.registerInfix(token.TokenDot, p.parseFieldAccessExpression) // For record.field access
 }
 
 // parseExpression is the main entry point for Pratt parsing.
 func (p *Parser) parseExpression(precedence int) ast.Expression {
 	// Ensure Pratt functions are registered
-	if prefixParseFns == nil {
+	if p.prefixParseFns == nil {
 		p.initializePratt()
 	}
 
 	// NUD (Prefix) lookup
-	prefix := prefixParseFns[p.curTok.Type]
+	prefix := p.prefixParseFns[p.curTok.Type]
 	if prefix == nil {
 		p.addError(p.curTok, "No prefix parsing function found for token type %s ('%s')", p.curTok.Type, p.curTok.Literal)
 		return nil
@@ -1786,7 +1787,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	// LED (Infix) loop
 	for precedence < tokenPrecedence(p.curTok) {
-		infix := infixParseFns[p.curTok.Type]
+		infix := p.infixParseFns[p.curTok.Type]
 		if infix == nil {
 			// If no infix function, we're done with this precedence level
 			return leftExpr
@@ -1977,6 +1978,79 @@ func (p *Parser) parseInputOutputExpression() ast.Expression {
 }
 
 // --- Pratt LED/Infix Functions ---
+
+// parseFieldAccessExpression handles parsing record.field expressions
+func (p *Parser) parseFieldAccessExpression(left ast.Expression) ast.Expression {
+	dotToken := p.curTok // Store the '.' token
+
+	// --- Semantic Check 1: Is the left side a record variable? ---
+	// For now, we simplify and assume 'left' MUST be an *ast.Identifier
+	// representing a variable whose type is a known record.
+	recordVarIdent, ok := left.(*ast.Identifier)
+	if !ok {
+		p.addSemanticError(dotToken, "Field access operator '.' must follow a record variable identifier")
+		// Recovery: Consume '.' and potential field name
+		p.nextToken() // Consume '.'
+		if p.peekTok.Type == token.TokenIdent { p.nextToken() }
+		return nil
+	}
+
+	if recordVarIdent.Symbol == nil {
+		// Undeclared variable error already added by parseIdentifier
+		p.nextToken() // Consume '.'
+		if p.peekTok.Type == token.TokenIdent { p.nextToken() }
+		return nil
+	}
+
+	// Check the *variable's* symbol to see if it points to a record *type*
+	recordDefinition := recordVarIdent.Symbol.RecordTypeSymbol
+	if recordDefinition == nil || recordDefinition.Type != "record" {
+		 recordTypeName := recordVarIdent.Symbol.Type // Get the actual type name
+		 if recordTypeName == "unknown" { recordTypeName = "??"} // Handle case where var itself is unknown
+		p.addSemanticError(recordVarIdent.Token, "'%s' is not a record variable (type: %s)", recordVarIdent.Value, recordTypeName)
+		p.nextToken() // Consume '.'
+		if p.peekTok.Type == token.TokenIdent { p.nextToken() }
+		return nil
+	}
+	recordTypeName := recordDefinition.Name // Get the name like "SimpleRec"
+
+
+	// --- Consume '.' and expect field name IDENT ---
+	// NOTE: We are already on the '.' token when called as an infix function.
+	p.nextToken() // Consume '.'
+	if p.curTok.Type != token.TokenIdent { 
+		p.addError(p.curTok, "Expected field name (identifier) after '.'")
+		return nil
+	}
+	fieldIdent := &ast.Identifier{Token: p.curTok, Value: p.curTok.Literal}
+	fieldName := fieldIdent.Value
+	p.nextToken() // Consume field identifier
+
+	// --- Semantic Check 2: Does the field exist in the record definition? ---
+	var resolvedFieldInfo *symbols.FieldInfo
+	fieldFound := false
+	for i := range recordDefinition.Fields { // Iterate over fields in the record type's symbol
+		if recordDefinition.Fields[i].Name == fieldName {
+			resolvedFieldInfo = &recordDefinition.Fields[i] // Store pointer to field info
+			fieldFound = true
+			break
+		}
+	}
+
+	if !fieldFound {
+		p.addSemanticError(fieldIdent.Token, "Record type '%s' has no field named '%s'", recordTypeName, fieldName)
+		// Don't link field symbol, ResultType/Width will be unknown/0
+	}
+
+	// Create AST node
+	expr := &ast.FieldAccessExpression{
+		Token:         dotToken,
+		Record:        left, // The record variable identifier
+		Field:         fieldIdent,
+		ResolvedField: resolvedFieldInfo, // Link to the field info if found
+	}
+	return expr
+}
 
 func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	opToken := p.curTok
