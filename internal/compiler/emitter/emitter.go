@@ -3,6 +3,7 @@ package emitter
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/arnavsurve/grace/internal/compiler/ast"
@@ -403,6 +404,60 @@ func (e *Emitter) analyzeExpression(expr ast.Expression) {
 		// Could analyze record type usage here if needed later
 	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral:
 		// Base cases
+	}
+}
+
+// New helper to analyze an expression AND return if it requires an INT temp
+// This is separate from the main analyzeExpression which just sets global flags
+func (e *Emitter) analyzeExpressionRequiresTempInt(expr ast.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	switch ex := expr.(type) {
+	case *ast.BinaryExpression:
+		if ex.ResultType() == "int" && !isConstantFoldedInt(ex) {
+			return true // This specific expression needs a temp
+		}
+		// Check children recursively
+		return e.analyzeExpressionRequiresTempInt(ex.Left) || e.analyzeExpressionRequiresTempInt(ex.Right)
+	case *ast.GroupedExpression:
+		return e.analyzeExpressionRequiresTempInt(ex.Expression)
+	case *ast.ProcCallExpression:
+		for _, arg := range ex.Arguments {
+			if e.analyzeExpressionRequiresTempInt(arg) {
+				e.needsTempInt = true // Set global flag too
+			}
+		}
+		return false // The call itself doesn't require *this specific* print mechanism temp
+	// Base cases don't require temps for print formatting
+	case *ast.Identifier, *ast.IntegerLiteral:
+		return false
+		// Add other cases as needed
+	default:
+		return false
+	}
+}
+
+// New helper to analyze an expression AND return if it requires a STRING temp
+func (e *Emitter) analyzeExpressionRequiresTempString(expr ast.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	switch ex := expr.(type) {
+	case *ast.BinaryExpression:
+		if ex.ResultType() == "string" && !isConstantFoldedString(ex) {
+			return true // This specific expression needs a temp
+		}
+		// Check children recursively
+		return e.analyzeExpressionRequiresTempString(ex.Left) || e.analyzeExpressionRequiresTempString(ex.Right)
+	case *ast.GroupedExpression:
+		return e.analyzeExpressionRequiresTempString(ex.Expression)
+		// Add ProcCall check similar to Int if needed
+	// Base cases don't require temps for print formatting
+	case *ast.Identifier, *ast.StringLiteral:
+		return false
+	default:
+		return false
 	}
 }
 
@@ -807,17 +862,10 @@ func (e *Emitter) emitWorkingStorageSection(programStatements []ast.Statement) {
 		e.emitComment("GRACE Compiler Helper Variables")
 
 		// Declare the main TMP-INT if needed by simple analysis OR if complex compute needs it
-		if e.needsTempInt || e.maxIntTempsNeeded > 0 {
-			// Use a large, signed format suitable for intermediate results
-			picClause := "PIC S9(18)" // Common choice for intermediate results
-			cobolName := tempIntName
-			if e.needsTempInt && e.maxIntTempsNeeded == 0 {
-				if _, declared := e.declaredVars[cobolName]; !declared {
-					e.emitA(fmt.Sprintf("01 %s PIC S9(18).", cobolName)) // Default large size
-					e.declaredVars[cobolName] = true
-				}
-			}
-			// Declare numbered temps if needed
+		// Declare Numbered Integer Temps (Calculation)
+		if e.maxIntTempsNeeded > 0 {
+			// Use S9(18) for intermediate calculation safety
+			picClause := "PIC S9(18)"
 			for i := 1; i <= e.maxIntTempsNeeded; i++ {
 				numTempName := e.getNumberedTempName(i)
 				if _, declared := e.declaredVars[numTempName]; !declared {
@@ -825,7 +873,26 @@ func (e *Emitter) emitWorkingStorageSection(programStatements []ast.Statement) {
 					e.declaredVars[numTempName] = true
 				}
 			}
+		} else if e.needsTempInt {
+			// If only basic analysis needed a temp, maybe declare TMP-INT-1 still?
+			// Or rely on the analysis finding at least 1 op count?
+			// Let's ensure at least one is declared if needsTempInt is true
+			numTempName := e.getNumberedTempName(1)
+			if _, declared := e.declaredVars[numTempName]; !declared {
+				e.emitA(fmt.Sprintf("01 %s PIC S9(18).", numTempName))
+				e.declaredVars[numTempName] = true
+			}
 		}
+
+		if e.needsTempInt {
+			dispTempName := "GRACE-TMP-DISPLAY"
+			picClause := "PIC Z(17)9-"
+			if _, declared := e.declaredVars[dispTempName]; !declared {
+				e.emitA(fmt.Sprintf("01 %s %s.", dispTempName, picClause))
+				e.declaredVars[dispTempName] = true
+			}
+		}
+
 		if e.needsTempString {
 			cobolName := tempStringName
 			if _, declared := e.declaredVars[cobolName]; !declared {
@@ -833,6 +900,7 @@ func (e *Emitter) emitWorkingStorageSection(programStatements []ast.Statement) {
 				e.declaredVars[cobolName] = true
 			}
 		}
+
 		if e.needsEOFflag {
 			cobolName := eofFlagName
 			if _, declared := e.declaredVars[cobolName]; !declared {
@@ -1215,42 +1283,74 @@ func (e *Emitter) emitPrint(stmt *ast.PrintStatement) {
 		return
 	}
 
-	// Check if printing a record variable directly
+	// --- Handle Records First ---
 	if ident, ok := stmt.Value.(*ast.Identifier); ok && ident.Symbol != nil && ident.Symbol.RecordTypeSymbol != nil {
-		// Printing a record variable - COBOL usually displays group items
 		cobolName := e.getScopedCobolName(ident.Value)
 		e.emitB(fmt.Sprintf("DISPLAY %s", cobolName))
 		return
 	}
-	// Check if printing result of function returning record
 	if call, ok := stmt.Value.(*ast.ProcCallExpression); ok && call.ResolvedRecordType != nil {
 		retVarNameRaw := returnVarPrefix + call.Function.Value
 		cobolRetVarName := sanitizeIdentifier(retVarNameRaw)
-		// TODO: Need to PERFORM the call first if not already done?
-		// Assume call happens elsewhere if used in expression. If direct print(call()), need perform.
-		// For now, assume result is in return var
 		e.emitB(fmt.Sprintf("DISPLAY %s", cobolRetVarName))
 		return
 	}
 
-	// --- Existing logic for simple types/expressions ---
+	// --- Get Value Representation ---
 	valueStr, isLiteral, err := e.emitExpressionForResult(stmt.Value)
 	if err != nil {
 		return
-	} // Error handled
+	}
 	if valueStr == "" {
 		return
-	}
+	} // Handle potential empty results?
 
+	// --- Emit DISPLAY based on type ---
 	if isLiteral {
+		// Display literals directly (handle empty string)
 		if strLit, ok := stmt.Value.(*ast.StringLiteral); ok && strLit.Value == "" {
 			e.emitB("DISPLAY SPACE")
 		} else {
-			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr)) // Handles quoted strings
+			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
 		}
 	} else {
-		e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr)) // Handles vars/temps
+		// It's a variable (user var, temp var, return var)
+		// Check variable type for special handling
+		isTempInt := isNumberedTempIntVarName(valueStr)
+		isTempStr := (valueStr == tempStringName)
+		dispTempName := "GRACE-TMP-DISPLAY"
+		_, hasDisplayField := e.declaredVars[dispTempName]
+
+		if isTempInt { // Format temporary integer vars using DISPLAY FUNCTION TRIM
+			if hasDisplayField {
+				e.emitB(fmt.Sprintf("MOVE %s TO %s", valueStr, dispTempName))
+				e.emitB(fmt.Sprintf("DISPLAY FUNCTION TRIM(%s)", dispTempName))
+			} else {
+				e.addError("Internal Emitter Error: TMP-DISPLAY required for %s but not declared.", valueStr)
+				e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr)) // Fallback to direct display
+			}
+		} else if isTempStr { // Format temporary string vars using FUNCTION TRIM
+			e.emitB(fmt.Sprintf("DISPLAY FUNCTION TRIM(%s)", tempStringName))
+		} else { // Standard display for other variables
+			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
+		}
 	}
+}
+
+// Helper function to check if a name matches the numbered temporary integer pattern
+func isNumberedTempIntVarName(name string) bool {
+	// Check if the name has the correct prefix
+	prefix := tempIntName + "-" // e.g., "GRACE-TMP-INT-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	
+	// Extract and check number part
+	numPart := name[len(prefix):]
+	
+	// If the remaining part can be parsed as an integer, it's a valid temp int var name
+	_, err := strconv.Atoi(numPart)
+	return err == nil 
 }
 
 func (e *Emitter) emitDeclaration(stmt *ast.DeclarationStatement) {
@@ -1299,7 +1399,10 @@ func (e *Emitter) emitReassignment(stmt *ast.ReassignmentStatement) {
 
 // --- Core Expression/Assignment Helpers ---
 
-// emitExpressionForResult
+// emitExpressionForResult evaluates an expression, potentially emitting intermediate
+// steps (like COMPUTE or STRING into a temp var), and returns the
+// final COBOL entity (literal, var, temp var) holding the result,
+// plus a boolean indicating if it's a literal.
 func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, error) {
 	if expr == nil {
 		return "", false, fmt.Errorf("cannot emit nil expression")
@@ -1348,25 +1451,51 @@ func (e *Emitter) emitExpressionForResult(expr ast.Expression) (string, bool, er
 		return fmt.Sprintf(`"%s"`, escapedValue), true, nil
 
 	case *ast.BinaryExpression:
-		// ... (logic for int/string binary ops using temps - mostly unchanged) ...
-		// Ensure it doesn't allow operations on record/file types (parser should prevent)
-		if isConstantFoldedInt(node) { /* ... */
-		}
-		if isConstantFoldedString(node) { /* ... */
-		}
 		resultType := node.ResultType()
-		// ... handle int/string using temps ...
-		if resultType == "int" {
-			// ... COMPUTE into tempIntName ...
-			return tempIntName, false, nil
-		} else if resultType == "string" {
-			// ... STRING into tempStringName ...
-			return tempStringName, false, nil
-		} else {
-			err := fmt.Errorf("cannot evaluate binary expression yielding type '%s'", resultType)
-			e.addError("Emitter Error: %v", err)
-			return "", false, err
+
+		// Handle constant folding first
+		if foldedIntStr := e.tryEmitFoldedBinary(node); foldedIntStr != "" && resultType == "int" {
+			return foldedIntStr, true, nil // Return folded integer literal string
 		}
+		// TODO: Folded strings if needed
+
+		// Handle non-folded INT expression
+		if resultType == "int" {
+			computeStr, err := e.emitExpressionForCompute(node)
+			if err != nil {
+				return "", false, err
+			}
+
+			if e.maxIntTempsNeeded < 1 {
+				e.addError("Internal Emitter Error: Need temp var for '%s' but none allocated (maxIntTempsNeeded=%d)", computeStr, e.maxIntTempsNeeded)
+				return "", false, fmt.Errorf("temp variable allocation mismatch")
+			}
+			tempVarToUse := e.getNumberedTempName(1) // Use GRACE-TMP-INT-1
+
+			// Emit the COMPUTE statement to calculate the result into the temp var
+			e.emitB(fmt.Sprintf("COMPUTE %s = %s", tempVarToUse, computeStr))
+
+			return tempVarToUse, false, nil // Return numbered temp name, mark as non-literal
+		}
+
+		// Handle non-folded STRING expression
+		if resultType == "string" {
+			if !e.needsTempString {
+				e.addError("Internal Emitter Error: Need string temp var for concatenation but not flagged by analysis")
+				return "", false, fmt.Errorf("string temp variable mismatch")
+			}
+
+			err := e.emitStringConcatenation(tempStringName, node)
+			if err != nil {
+				return "", false, err
+			}
+
+			return tempStringName, false, nil
+		}
+
+		err := fmt.Errorf("cannot evaluate binary expression yielding type '%s'", resultType)
+		e.addError("Emitter Error: %v", err)
+		return "", false, err
 
 	case *ast.GroupedExpression:
 		return e.emitExpressionForResult(node.Expression)
@@ -1671,9 +1800,6 @@ func (e *Emitter) emitProcDeclaration(stmt *ast.ProcDeclarationStatement) {
 	for _, p := range stmt.Parameters {
 		paramStrings = append(paramStrings, p.String())
 	}
-	returnString := stmt.ReturnType.String()
-	sigComment := fmt.Sprintf("proc %s(%s): %s", procName, strings.Join(paramStrings, ", "), returnString)
-	e.emitComment(sigComment)
 
 	// Emit Procedure Body - statements inside use local scope via getScopedCobolName
 	e.emitStatement(stmt.Body)
