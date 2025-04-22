@@ -4,12 +4,10 @@
        PROCEDURE DIVISION.
        DECLARATIVES.
        GRACE-INNER SECTION.
-      *proc inner(): void
            DISPLAY "inside inner proc".
            EXIT SECTION.
 
        GRACE-OUTER SECTION.
-      *proc outer(): void
            DISPLAY "outer proc start".
            PERFORM GRACE-INNER.
            DISPLAY "outer proc end".

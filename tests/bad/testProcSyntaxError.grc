@@ -4,6 +4,6 @@ proc missingBrace()
 }
 
 // Valid proc for reference
-proc valid() {
+proc valid(): void {
     print("This is valid")
 }

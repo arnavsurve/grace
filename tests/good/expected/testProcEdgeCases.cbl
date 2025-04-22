@@ -8,11 +8,9 @@
        PROCEDURE DIVISION.
        DECLARATIVES.
        GRACE-EMPTY SECTION.
-      *proc empty(): void
            EXIT SECTION.
 
        GRACE-SHOWVAL SECTION.
-      *proc showVal(): void
            DISPLAY "Value in proc: ".
            DISPLAY GRACE-GVAL.
            EXIT SECTION.
@@ -20,7 +18,7 @@
        END DECLARATIVES.
 
        MAIN SECTION.
-           MOVE 42 TO GRACE-GVAL.
+           COMPUTE GRACE-GVAL = 42.
            PERFORM GRACE-EMPTY.
            DISPLAY "Global value: ".
            DISPLAY GRACE-GVAL.

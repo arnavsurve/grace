@@ -4,7 +4,6 @@
        PROCEDURE DIVISION.
        DECLARATIVES.
        GRACE-SAYHI SECTION.
-      *proc sayHi(): void
            DISPLAY "hi from proc!".
            EXIT SECTION.
 

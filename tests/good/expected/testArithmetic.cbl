@@ -14,12 +14,14 @@
        01 GRACE-I PIC 9(4).
 
       *GRACE Compiler Helper Variables
-       01 GRACE-TMP-INT PIC 9(6).
+       01 GRACE-TMP-INT-1 PIC S9(18).
+       01 GRACE-TMP-INT-2 PIC S9(18).
+       01 GRACE-TMP-DISPLAY PIC Z(17)9-.
 
        PROCEDURE DIVISION.
        MAIN SECTION.
-           MOVE 10 TO GRACE-A.
-           MOVE 5 TO GRACE-B.
+           COMPUTE GRACE-A = 10.
+           COMPUTE GRACE-B = 5.
            COMPUTE GRACE-C = GRACE-A + GRACE-B.
            COMPUTE GRACE-D = GRACE-A - 3.
            COMPUTE GRACE-E = GRACE-B * 2.
@@ -28,10 +30,10 @@
            DISPLAY GRACE-D.
            DISPLAY GRACE-E.
            DISPLAY GRACE-F.
-           COMPUTE GRACE-G = GRACE-A + ( GRACE-B * 2 ).
+           COMPUTE GRACE-G = GRACE-A + GRACE-B * 2.
            DISPLAY GRACE-G.
-           COMPUTE GRACE-H = ( ( GRACE-A + GRACE-B ) ) * 2.
+           COMPUTE GRACE-H = (GRACE-A + GRACE-B) * 2.
            DISPLAY GRACE-H.
-           COMPUTE GRACE-I = ( GRACE-A * GRACE-B ) + 2.
+           COMPUTE GRACE-I = GRACE-A * GRACE-B + 2.
            DISPLAY GRACE-I.
            GOBACK.

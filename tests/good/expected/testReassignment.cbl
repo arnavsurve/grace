@@ -12,8 +12,8 @@
            DISPLAY GRACE-MESSAGE.
            MOVE "Changed" TO GRACE-MESSAGE.
            DISPLAY GRACE-MESSAGE.
-           MOVE 10 TO GRACE-COUNTER.
+           COMPUTE GRACE-COUNTER = 10.
            DISPLAY GRACE-COUNTER.
-           MOVE 20 TO GRACE-COUNTER.
+           COMPUTE GRACE-COUNTER = 20.
            DISPLAY GRACE-COUNTER.
            GOBACK.

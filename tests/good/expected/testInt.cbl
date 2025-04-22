@@ -8,8 +8,8 @@
 
        PROCEDURE DIVISION.
        MAIN SECTION.
-           MOVE 123 TO GRACE-COUNT.
+           COMPUTE GRACE-COUNT = 123.
            DISPLAY GRACE-COUNT.
-           MOVE 0 TO GRACE-ANOTHER.
+           COMPUTE GRACE-ANOTHER = 0.
            DISPLAY GRACE-ANOTHER.
            GOBACK.

@@ -10,6 +10,6 @@
        MAIN SECTION.
            MOVE "Hello Const" TO GRACE-GREETING.
            DISPLAY GRACE-GREETING.
-           MOVE 999 TO GRACE-MAX-VALUE.
+           COMPUTE GRACE-MAX-VALUE = 999.
            DISPLAY GRACE-MAX-VALUE.
            GOBACK.

@@ -7,6 +7,6 @@
 
        PROCEDURE DIVISION.
        MAIN SECTION.
-           MOVE 12345 TO GRACE-A.
+           COMPUTE GRACE-A = 12345.
            DISPLAY GRACE-A.
            GOBACK.

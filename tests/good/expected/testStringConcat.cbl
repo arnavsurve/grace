@@ -21,7 +21,12 @@
                INTO GRACE-S3.
            DISPLAY GRACE-S1.
            DISPLAY GRACE-S3.
-           DISPLAY GRACE-TMP-STR.
+           MOVE SPACES TO GRACE-TMP-STR.
+           STRING "Direct: " DELIMITED BY SIZE
+                  GRACE-S2 DELIMITED BY SIZE
+                  "!" DELIMITED BY SIZE
+               INTO GRACE-TMP-STR.
+           DISPLAY FUNCTION TRIM(GRACE-TMP-STR).
            MOVE SPACES TO GRACE-S2.
            STRING GRACE-S1 DELIMITED BY SIZE
                   "Again" DELIMITED BY SIZE

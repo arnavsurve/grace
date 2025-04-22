@@ -11,7 +11,7 @@
            MOVE "start" TO GRACE-X.
       *Self-assignment of GRACE-X - skipping MOVE
            DISPLAY GRACE-X.
-           MOVE 5 TO GRACE-I.
+           COMPUTE GRACE-I = 5.
       *Self-assignment of GRACE-I - skipping MOVE
            DISPLAY GRACE-I.
            GOBACK.

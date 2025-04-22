@@ -15,25 +15,27 @@
        01 GRACE-X PIC 9(3).
 
       *GRACE Compiler Helper Variables
-       01 GRACE-TMP-INT PIC 9(6).
+       01 GRACE-TMP-INT-1 PIC S9(18).
+       01 GRACE-TMP-INT-2 PIC S9(18).
+       01 GRACE-TMP-DISPLAY PIC Z(17)9-.
 
        PROCEDURE DIVISION.
        MAIN SECTION.
-           MOVE 20 TO GRACE-CF-A.
-           MOVE 100 TO GRACE-CF-B.
-           MOVE 100 TO GRACE-CF-C.
-           COMPUTE GRACE-CF-P = ( ( 6 ) ) + ( ( 20 ) ).
+           COMPUTE GRACE-CF-A = 20.
+           COMPUTE GRACE-CF-B = 100.
+           COMPUTE GRACE-CF-C = 100.
+           COMPUTE GRACE-CF-P = (6) + (20).
            DISPLAY GRACE-CF-A.
            DISPLAY GRACE-CF-B.
            DISPLAY GRACE-CF-C.
            DISPLAY GRACE-CF-P.
-           MOVE 100 TO GRACE-X.
+           COMPUTE GRACE-X = 100.
            COMPUTE GRACE-H-Y = GRACE-X * 5.
            COMPUTE GRACE-H-Z = 5 * GRACE-X.
            DISPLAY GRACE-H-Y.
            DISPLAY GRACE-H-Z.
-           MOVE 10 TO GRACE-R.
-           MOVE 20 TO GRACE-S.
-           COMPUTE GRACE-H-T = ( ( GRACE-R + GRACE-S ) ) * GRACE-R.
+           COMPUTE GRACE-R = 10.
+           COMPUTE GRACE-S = 20.
+           COMPUTE GRACE-H-T = (GRACE-R + GRACE-S) * GRACE-R.
            DISPLAY GRACE-H-T.
            GOBACK.

@@ -12,7 +12,7 @@
        MAIN SECTION.
            MOVE "Hello" TO GRACE-SHORT-STR.
            MOVE "123456789012345678901234567890" TO GRACE-EXACT-STR.
-           MOVE "This string is intentionally longer than 30 characters"
+           MOVE "This string is intentionally longer than 30 characters
       -"." TO GRACE-LONG-STR.
            MOVE GRACE-LONG-STR TO GRACE-COPY-LONG.
            DISPLAY GRACE-SHORT-STR.

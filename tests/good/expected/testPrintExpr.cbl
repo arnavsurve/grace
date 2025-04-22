@@ -7,13 +7,16 @@
        01 GRACE-B PIC 9(2).
 
       *GRACE Compiler Helper Variables
-       01 GRACE-TMP-INT PIC 9(6).
+       01 GRACE-TMP-INT-1 PIC S9(18).
+       01 GRACE-TMP-DISPLAY PIC Z(17)9-.
 
        PROCEDURE DIVISION.
        MAIN SECTION.
-           MOVE 100 TO GRACE-A.
-           MOVE 23 TO GRACE-B.
-           DISPLAY GRACE-TMP-INT.
+           COMPUTE GRACE-A = 100.
+           COMPUTE GRACE-B = 23.
+           COMPUTE GRACE-TMP-INT-1 = GRACE-A + GRACE-B.
+           MOVE GRACE-TMP-INT-1 TO GRACE-TMP-DISPLAY.
+           DISPLAY FUNCTION TRIM(GRACE-TMP-DISPLAY).
            DISPLAY 20.
            DISPLAY GRACE-A.
            GOBACK.
