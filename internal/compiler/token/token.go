@@ -4,40 +4,41 @@ type TokenType string
 
 const (
 	// Single character tokens
-	TokenLParen   TokenType = "LPAREN"   // (
-	TokenRParen   TokenType = "RPAREN"   // )
-	TokenLBrace   TokenType = "LBRACE"   // {
-	TokenRBrace   TokenType = "RBRACE"   // }
-	TokenAssign   TokenType = "ASSIGN"   // = (reassignment)
-	TokenPlus     TokenType = "PLUS"     // +
-	TokenMinus    TokenType = "MINUS"    // -
-	TokenAsterisk TokenType = "ASTERISK" // *
-	TokenSlash    TokenType = "SLASH"    // / (division)
-	TokenColon    TokenType = "COLON"    // :
-	TokenComma    TokenType = "COMMA"    // ,
-	TokenDot      TokenType = "DOT"      // .
+	TokenLParen   TokenType = "LPAREN"
+	TokenRParen   TokenType = "RPAREN"
+	TokenLBrace   TokenType = "LBRACE"
+	TokenRBrace   TokenType = "RBRACE"
+	TokenAssign   TokenType = "ASSIGN"
+	TokenPlus     TokenType = "PLUS"
+	TokenMinus    TokenType = "MINUS"
+	TokenAsterisk TokenType = "ASTERISK"
+	TokenSlash    TokenType = "SLASH"
+	TokenColon    TokenType = "COLON"
+	TokenComma    TokenType = "COMMA"
+	TokenDot      TokenType = "DOT"
 
 	// Keywords
-	TokenPrint  TokenType = "PRINT"  // print
-	TokenConst  TokenType = "CONST"  // const
-	TokenProc   TokenType = "PROC"   // proc
-	TokenReturn TokenType = "RETURN" // return
-	TokenVoid   TokenType = "VOID"   // void (used as a type literal)
+	TokenPrint  TokenType = "PRINT"
+	TokenConst  TokenType = "CONST"
+	TokenProc   TokenType = "PROC"
+	TokenReturn TokenType = "RETURN"
+	TokenVoid   TokenType = "VOID" // used as a type literal
 	// NOTE: TokenVoid is also lexed and can be checked specifically,
 	// but is often treated like a TokenTypeLiteral in parsing logic for type nodes
-	TokenRecord      TokenType = "RECORD" // record
-	TokenFileKeyword TokenType = "FILE"   // file keyword (use as type)
-	TokenInput       TokenType = "INPUT"  // input keyword
-	TokenOutput      TokenType = "OUTPUT" // output keyword
-	TokenRead        TokenType = "READ"   // read keyword
-	TokenWrite       TokenType = "WRITE"  // write keyword
-	TokenInto        TokenType = "INTO"   // into keyword
-	TokenFrom        TokenType = "FROM"   // from keyword
+	TokenRecord      TokenType = "RECORD"
+	TokenFileKeyword TokenType = "FILE"
+	TokenInput       TokenType = "INPUT"
+	TokenOutput      TokenType = "OUTPUT"
+	TokenRead        TokenType = "READ"
+	TokenWrite       TokenType = "WRITE"
+	TokenInto        TokenType = "INTO"
+	TokenFrom        TokenType = "FROM"
 
 	// Literals & Identifiers
-	TokenString TokenType = "STRING" // "..."
-	TokenInt    TokenType = "INT"    // 43
-	TokenIdent  TokenType = "IDENT"  // Identifier (e.g. variable name)
+	TokenString  TokenType = "STRING"  // "..."
+	TokenInt     TokenType = "INT"     // 43
+	TokenIdent   TokenType = "IDENT"   // Identifier (e.g. variable name)
+	TokenBoolLit TokenType = "BOOLEAN" // true, false
 
 	// Special
 	TokenEOF     TokenType = "EOF"

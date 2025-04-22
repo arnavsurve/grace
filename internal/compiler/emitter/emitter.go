@@ -1327,18 +1327,14 @@ func (e *Emitter) emitPrint(stmt *ast.PrintStatement) {
 		if isTempInt { // Format temporary integer vars using DISPLAY FUNCTION TRIM
 			if hasDisplayField {
 				e.emitB(fmt.Sprintf("MOVE %s TO %s", valueStr, dispTempName))
-
 				e.emitB(fmt.Sprintf("DISPLAY FUNCTION TRIM(%s)", dispTempName))
 			} else {
 				e.addError("Internal Emitter Error: TMP-DISPLAY required for %s but not declared.", valueStr)
-
 				e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr)) // Fallback to direct display
 			}
 		} else if isTempStr { // Format temporary string vars using FUNCTION TRIM
-
 			e.emitB(fmt.Sprintf("DISPLAY FUNCTION TRIM(%s)", tempStringName))
 		} else { // Standard display for other variables
-
 			e.emitB(fmt.Sprintf(`DISPLAY %s`, valueStr))
 		}
 	}

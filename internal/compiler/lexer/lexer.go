@@ -120,9 +120,9 @@ func (l *Lexer) NextToken() token.Token {
 		tok = l.newToken(token.TokenComma, string(l.ch), startLine, startCol)
 		l.readChar() // Consume the comma
 		return tok   // Return immediately
-	case '.': // NEW
+	case '.':
 		tok = l.newToken(token.TokenDot, string(l.ch), startLine, startCol)
-		l.readChar() // Consume '.'
+		l.readChar()
 		return tok
 	case ':':
 		if l.peekChar() == '=' {
@@ -256,6 +256,8 @@ var keywords = map[string]token.TokenType{
 	"write":  token.TokenWrite,
 	"into":   token.TokenInto,
 	"from":   token.TokenFrom,
+	"true":   token.TokenBoolLit,
+	"false":  token.TokenBoolLit,
 	// Add other type keywords like "bool" here if needed
 }
 

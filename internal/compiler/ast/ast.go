@@ -418,6 +418,21 @@ func (il *IntegerLiteral) String() string {
 func (il *IntegerLiteral) GetToken() token.Token                  { return il.Token }
 func (il *IntegerLiteral) GetResolvedSymbol() *symbols.SymbolInfo { return nil }
 
+// BooleanLiteral -> (true/false)
+type BooleanLiteral struct {
+	Token token.Token
+	Value bool
+	Width int
+}
+
+func (bl *BooleanLiteral) expressionNode()                        {}
+func (bl *BooleanLiteral) TokenLiteral() string                   { return bl.Token.Literal }
+func (bl *BooleanLiteral) String() string                         { return bl.Token.Literal }
+func (bl *BooleanLiteral) ResultType() string                     { return "bool" }
+func (bl *BooleanLiteral) ResultWidth() int                       { return 1 }
+func (bl *BooleanLiteral) GetToken() token.Token                  { return bl.Token }
+func (bl *BooleanLiteral) GetResolvedSymbol() *symbols.SymbolInfo { return nil }
+
 // BinaryExpression -> (left + right)
 type BinaryExpression struct {
 	Token    token.Token // +, -, *, /
@@ -674,12 +689,14 @@ func (fe *FieldAccessExpression) ResultType() string {
 	}
 	return "unknown"
 }
+
 func (fe *FieldAccessExpression) ResultWidth() int {
 	if fe.ResolvedField != nil {
 		return fe.ResolvedField.Width
 	}
 	return 0
 }
+
 func (fe *FieldAccessExpression) GetResolvedSymbol() *symbols.SymbolInfo {
 	// Accessing a field doesn't yield a top-level symbol directly
 	// We *could* return the symbol of the field's type if needed, but nil seems appropriate
@@ -803,6 +820,9 @@ func PrintAST(node Node, indent string) {
 	case *IntegerLiteral:
 		fmt.Printf("%sIntegerLiteral: %d (Width: %d)\n", indent, n.Value, n.Width)
 
+	case *BooleanLiteral:
+		fmt.Printf("%sBooleanLiteral: %s (Width: 1)\n", indent, n.Value)
+
 	case *BinaryExpression:
 		fmt.Printf("%sBinaryExpression Op: %s (ResultType: %s, ResultWidth: %d)\n", indent, n.Operator, n.ResultType(), n.ResultWidth())
 		fmt.Println(indent + "  Left:")
@@ -824,7 +844,7 @@ func PrintAST(node Node, indent string) {
 		fmt.Printf("%sInputExpression File: %s, Record: %s\n", indent, n.SystemFileName.String(), n.RecordTypeName.String())
 	case *OutputExpression:
 		fmt.Printf("%sOutputExpression File: %s, Record: %s\n", indent, n.SystemFileName.String(), n.RecordTypeName.String())
-			
+
 	case *FieldAccessExpression:
 		fieldType := "unknown"
 		fieldWidth := 0

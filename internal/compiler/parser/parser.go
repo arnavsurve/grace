@@ -1308,7 +1308,7 @@ func (p *Parser) skipBlock() {
 	}
 }
 
-// parseReturnStatement (Pass 2) parses `return [expression]`
+// parseReturnStatement (Pass 2) parses 'return [expression]'
 func (p *Parser) parseReturnStatement() ast.Statement {
 	stmt := &ast.ReturnStatement{Token: p.curTok}
 	returnTok := p.curTok
@@ -1762,6 +1762,7 @@ func (p *Parser) initializePratt() {
 	p.registerPrefix(token.TokenIdent, p.parseIdentifier)
 	p.registerPrefix(token.TokenInt, p.parseIntegerLiteral)
 	p.registerPrefix(token.TokenString, p.parseStringLiteral)
+	p.registerPrefix(token.TokenBoolLit, p.parseBooleanLiteral)
 	p.registerPrefix(token.TokenLParen, p.parseGroupedExpression)
 	p.registerPrefix(token.TokenInput, p.parseInputOutputExpression)
 	p.registerPrefix(token.TokenOutput, p.parseInputOutputExpression)
@@ -1838,6 +1839,17 @@ func (p *Parser) parseStringLiteral() ast.Expression {
 		Width: len(token.Literal),
 	}
 	p.nextToken() // Consume the string token
+	return expr
+}
+
+func (p *Parser) parseBooleanLiteral() ast.Expression {
+	token := p.curTok
+	expr := &ast.BooleanLiteral{
+		Token: token,
+		Value: (p.curTok.Literal == "true"),
+		Width: 1,
+	}
+	p.nextToken()
 	return expr
 }
 
