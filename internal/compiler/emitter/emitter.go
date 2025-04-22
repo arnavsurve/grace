@@ -1676,8 +1676,14 @@ func (e *Emitter) emitAssignment(targetVarCobolName string, rhsExpr ast.Expressi
 			return err
 		}
 
+		if computeExprStr == targetVarCobolName {
+			e.emitComment(fmt.Sprintf("Self-assignment of %s - skipping MOVE", targetVarCobolName))
+			return nil
+		}
+
 		// Check if the single-line COMPUTE fits
 		singleLineCompute := fmt.Sprintf("COMPUTE %s = %s", targetVarCobolName, computeExprStr)
+
 		// Check length including indent and period
 		if len(areaBIndent+singleLineCompute+".") <= cobolLineEndCol {
 			// It fits! Emit the single line.
