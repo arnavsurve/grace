@@ -201,70 +201,87 @@ func (e *Emitter) emitB(line string) {
 
 			// --- Multi-line handling for MOVE (triggered because full line doesn't fit) ---
 
-			// Calculate max length for the string literal chunk on the *first* MOVE line
-			maxLenFirstLineLiteral := cobolLineEndCol - (len(areaBIndent) + len("MOVE ") + 2) // "literal"
-			maxLenFirstLineLiteral = max(maxLenFirstLineLiteral, 0)
+			// Calculate max length for literal content on the first line
+			// Space needed: indent + MOVE + " + " (closing quote)
+			maxLenFirstLineLiteralContent := cobolLineEndCol - (len(areaBIndent) + len("MOVE ") + 2)
+			maxLenFirstLineLiteralContent = max(maxLenFirstLineLiteralContent, 0)
 
-			firstChunk := literalContent
-			if len(firstChunk) > maxLenFirstLineLiteral {
-				firstChunk = firstChunk[:maxLenFirstLineLiteral]
-			}
-			remainingLiteral := literalContent[len(firstChunk):]
+			// Calculate max length for literal content on continuation lines
+			// Space needed: continuation prefix + " + " (closing quote)
+			maxLenContinueLiteralContent := cobolLineEndCol - (len(continuationPrefix) + 2)
+			maxLenContinueLiteralContent = max(maxLenContinueLiteralContent, 0)
 
-			// Emit first line: MOVE "chunk"
-			e.builder.WriteString(fmt.Sprintf("%sMOVE \"%s\"\n", areaBIndent, firstChunk))
-
-			// Max length for subsequent literal chunks on continuation lines
-			maxLenContinueLiteral := cobolLineEndCol - len(continuationPrefix) - 2 // -"literal"
-			maxLenContinueLiteral = max(maxLenContinueLiteral, 0)
-
-			lastLiteralLineContent := "" // Track the content written on the last line used for literals
-
-			// Loop through remaining literal parts (if any)
-			for len(remainingLiteral) > 0 {
-				chunkLen := maxLenContinueLiteral
-				if chunkLen <= 0 {
-					chunkLen = 1
-				} // Ensure progress
-
-				currChunk := remainingLiteral
-				if len(currChunk) > chunkLen {
-					currChunk = currChunk[:chunkLen]
-				}
-				remainingLiteral = remainingLiteral[len(currChunk):]
-
-				// Emit continuation line: -"chunk"
-				lastLiteralLineContent = fmt.Sprintf("%s\"%s\"", continuationPrefix, currChunk)
-				e.builder.WriteString(lastLiteralLineContent)
-
-				if len(remainingLiteral) > 0 {
-					// More literal chunks follow, end this line
-					e.builder.WriteString("\n")
-					lastLiteralLineContent = "" // Reset as this line is finished
-				}
-				// If it was the last chunk, DO NOT add newline yet, suffix might append.
+			// --- Try building the single-line version first ---
+			singleLineStmt := fmt.Sprintf("%sMOVE \"%s\" %s.", areaBIndent, literalContent, suffixPart) // suffixPart = "TO VAR"
+			if len(singleLineStmt) <= cobolLineEndCol {
+				e.builder.WriteString(singleLineStmt + "\n")
+				return // Simple case: fits on one line
 			}
 
-			// --- Now, append the suffix ---
-			suffixWithSpaceAndPeriod := fmt.Sprintf(" %s.", suffixPart) // Add leading space and period
+			// --- Multi-line logic needed ---
+			currentLiteral := literalContent
+			currentLineIsFirst := true
+			builderContent := "" // Accumulate lines here before final write
 
-			if lastLiteralLineContent != "" {
-				// Suffix needs to be appended to the last literal line
-				if len(lastLiteralLineContent)+len(suffixWithSpaceAndPeriod) <= cobolLineEndCol {
-					// Append suffix to the current line
-					e.builder.WriteString(suffixWithSpaceAndPeriod + "\n")
+			for len(currentLiteral) > 0 {
+				var linePrefix string
+				var maxContentLen int
+
+				if currentLineIsFirst {
+					linePrefix = fmt.Sprintf("%sMOVE \"", areaBIndent)
+					maxContentLen = maxLenFirstLineLiteralContent
 				} else {
-					// Suffix doesn't fit on the last literal line, needs its own cont. line
-					e.builder.WriteString("\n") // End the last literal line
-					e.builder.WriteString(fmt.Sprintf("%s %s.\n", continuationPrefix, suffixPart))
+					// Add newline before continuation line
+					builderContent += "\n"
+					linePrefix = fmt.Sprintf("%s\"", continuationPrefix) // Starts with -"
+					maxContentLen = maxLenContinueLiteralContent
 				}
-			} else {
-				// The entire literal fit on the *first* line (e.g., MOVE "chunk"\n)
-				// We already know the suffix didn't fit on that first line (from originalLineLength check)
-				// So, the suffix *must* go on a new continuation line.
-				e.builder.WriteString(fmt.Sprintf("%s %s.\n", continuationPrefix, suffixPart))
+
+				chunkLen := len(currentLiteral)
+				isLastChunk := true // Assume this is the last chunk initially
+				if chunkLen > maxContentLen {
+					chunkLen = maxContentLen
+					isLastChunk = false // More literal remaining
+				}
+
+				chunk := currentLiteral[:chunkLen]
+				currentLiteral = currentLiteral[len(chunk):]
+
+				// Append the chunk to the current line content
+				builderContent += linePrefix + chunk
+
+				if isLastChunk {
+					// This was the final piece of the literal, add the closing quote
+					builderContent += "\""
+					break // Exit the literal processing loop
+				}
+				// If not the last chunk, DO NOT add quote, loop continues implicitly continuing literal
+				currentLineIsFirst = false
 			}
-			return // Finished handling multi-line MOVE
+
+			// --- Now, handle the suffix ---
+			suffixWithSpaceAndPeriod := fmt.Sprintf(" %s.", suffixPart) // " TO VAR."
+
+			// Check if suffix fits on the line where the literal just ended
+			lines := strings.Split(strings.TrimRight(builderContent, "\n"), "\n")
+			lastLineLength := 0
+			if len(lines) > 0 {
+				lastLineLength = len(lines[len(lines)-1])
+			}
+
+			if lastLineLength+len(suffixWithSpaceAndPeriod) <= cobolLineEndCol {
+				// Suffix fits on the current last line
+				builderContent += suffixWithSpaceAndPeriod
+			} else {
+				// Suffix needs its own continuation line
+				builderContent += "\n" // End the last literal line
+				builderContent += fmt.Sprintf("%s%s", continuationPrefix, suffixWithSpaceAndPeriod)
+			}
+
+			// Write the fully constructed multi-line statement
+			e.builder.WriteString(builderContent + "\n")
+
+			return // Finished
 		}
 	}
 
