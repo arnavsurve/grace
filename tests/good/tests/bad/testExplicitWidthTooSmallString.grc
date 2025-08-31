@@ -1,0 +1,2 @@
+// Error: Literal "TooLong" length 7 > declared width 5
+s: string(5) = "TooLong"

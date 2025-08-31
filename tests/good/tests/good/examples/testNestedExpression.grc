@@ -1,0 +1,7 @@
+a := 5
+b := 10
+c := 15
+result : int(2) = (a + b) * (c - (a + b / 2)) / 2
+
+print("Result of complex expression: ")
+print(result)

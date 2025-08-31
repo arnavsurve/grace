@@ -1,0 +1,12 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTEXPLICITSTRING.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 GRACE-S PIC X(15).
+
+       PROCEDURE DIVISION.
+       MAIN SECTION.
+           MOVE "Explicit String" TO GRACE-S.
+           DISPLAY GRACE-S.
+           GOBACK.

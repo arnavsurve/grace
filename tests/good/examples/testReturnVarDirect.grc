@@ -1,0 +1,14 @@
+// testReturnVarDirect.grc
+// Purpose: Check direct use of the return value without assignment first.
+
+proc getValue(): int(2) {
+  return 77
+}
+
+print("Directly printing return value:")
+// This requires PERFORM getValue, then DISPLAY GRACE-RETURN-INT
+print(getValue())
+
+print("Adding return value:")
+// This requires PERFORM getValue, then COMPUTE TEMP = 5 + GRACE-RETURN-INT, then DISPLAY TEMP
+print(5 + getValue())

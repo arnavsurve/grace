@@ -1,0 +1,42 @@
+// tests/good/testFieldAccess.grc
+record UserRec {
+    userId   : int(6)
+    userName : string(20)
+    isActive : int(1)
+}
+
+usersFile: file = input("users.dat", UserRec) // Assume users.dat exists
+logFile   := output("users_out.dat", UserRec)
+
+currentUser: UserRec
+tempId: int(6) = 0
+
+print("Reading user...")
+read usersFile into currentUser
+
+// Access and print fields
+print("User ID:")
+print(currentUser.userId)
+print("User Name:")
+print(currentUser.userName)
+
+// Modify a field
+print("Activating user...")
+currentUser.isActive = 1
+
+print("Changing user name...")
+currentUser.userName = "Bob"
+newName: string(20) = currentUser.userName
+
+print("User name changed to " + newName)
+
+// Use field in expression
+tempId = currentUser.userId + 100000 // Test arithmetic
+print("Temp ID:")
+print(tempId)
+
+// Write modified record
+print("Writing log...")
+write logFile from currentUser
+
+print("Done.")

@@ -1,0 +1,6 @@
+// tests/good/testPrintExpr.grc
+a := 100
+b := 23
+print(a + b) // Should print 123 via temp var
+print(5 * 4) // Should print 20 via temp var
+print(a)     // Should print 100 directly

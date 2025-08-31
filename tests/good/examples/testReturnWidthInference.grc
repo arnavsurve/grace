@@ -1,0 +1,18 @@
+// testReturnWidthInference.grc
+// Purpose: Test when return type width is omitted and should be inferred.
+
+// Width inferred from literal "Default Message" (len 15 -> default 30)
+proc getDefaultMessage(): string {
+    return "Default Message"
+}
+
+// Width inferred from literal 999 (width 3 -> default 6)
+proc getDefaultCode(): int {
+    return 999
+}
+
+msg := getDefaultMessage()
+code := getDefaultCode()
+
+print(msg)
+print(code)

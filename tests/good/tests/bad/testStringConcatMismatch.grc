@@ -1,0 +1,14 @@
+// Error: Operator '+' cannot be applied to types string and int
+s := "a" + 1
+
+// Error: Operator '+' cannot be applied to types int and string
+i := 2 + "b"
+
+// Error: Operator '-' not defined for string types
+s2 := "a" - "b"
+
+// Error: Operator '*' not defined for string types
+s3 := "a" * "b"
+
+// Error: Operator '/' not defined for string types
+s4 := "a" / "b"

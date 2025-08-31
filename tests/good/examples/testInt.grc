@@ -1,0 +1,6 @@
+// Test basic integer declaration and printing
+count := 123
+print(count)
+
+another : int(1) = 0
+print(another) 

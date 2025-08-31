@@ -1,0 +1,4 @@
+print("Line 1")
+print("Tabs and spaces") 
+print("Special chars: !@#$%^&*()_+-={}[]|:;,./")
+print("Empty string: ")

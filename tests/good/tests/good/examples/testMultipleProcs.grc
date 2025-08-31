@@ -1,0 +1,16 @@
+proc first(): void {
+    print("This is the first procedure")
+}
+
+proc second(): void {
+    print("This is the second procedure")
+}
+
+proc third(): void {
+    print("This is the third procedure")
+}
+
+first()
+second()
+third()
+first()  // Call the first procedure again

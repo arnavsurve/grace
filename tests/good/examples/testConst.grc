@@ -1,0 +1,5 @@
+const greeting : string(11) = "Hello Const"
+print(greeting)
+
+const MAX_VALUE : int(3) = 999
+print(MAX_VALUE)

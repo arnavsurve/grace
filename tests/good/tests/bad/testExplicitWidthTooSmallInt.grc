@@ -1,0 +1,2 @@
+// Error: Literal 12345 needs width 5, declared 4
+i: int(4) = 12345
