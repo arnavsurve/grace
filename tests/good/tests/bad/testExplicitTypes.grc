@@ -1,0 +1,21 @@
+// Mismatched type: assigning string to int
+z: int = "fail"
+
+// Width too small for literal
+s: string(4) = "too long"
+
+// Type mismatch from another var
+s1: string = "hello"
+i1: int = s1
+
+// Invalid width (zero)
+a: int(0) = 5
+
+// Invalid width (negative)
+b: string(-5) = "bad"
+
+// Invalid syntax: colon but no type
+oops: = 10
+
+// Invalid syntax: parens without type
+broken(3) := 5

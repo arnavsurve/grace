@@ -1,0 +1,7 @@
+proc sayHi(): void {
+	print("hi from proc!")
+}
+
+print("calling proc...")
+sayHi()
+print("...proc called")

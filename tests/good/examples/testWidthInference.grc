@@ -1,0 +1,29 @@
+// Test width inference with constant folding and heuristics
+
+// 1. Constant Folding
+cf_a := 5 * 4       // Result 20, width should be 2
+cf_b := 99 + 1       // Result 100, width should be 3
+cf_c := 1000 / 10    // Result 100, width should be 3
+cf_p := (2 * 3) + (4 * 5) // Result 6 + 20 = 26, width should be 2
+
+print(cf_a)
+print(cf_b)
+print(cf_c)
+print(cf_p)
+
+
+// 2. Fallback to Heuristics (using variables)
+x := 100             // Default width (6)
+h_y := x * 5         // Heuristic: width(x) + width(5) = 6 + 6 = 12
+h_z := 5 * x         // Heuristic: width(5) + width(x) = 6 + 6 = 12
+
+print(h_y)
+print(h_z)
+
+
+// 3. Heuristics Nested
+r := 10              // Default width (6)
+s := 20              // Default width (6)
+h_t := (r + s) * r   // Inner (r+s) heuristic: max(6,6)+1=7. Outer *r heuristic: 7+6=13
+
+print(h_t)

@@ -1,0 +1,13 @@
+// Test width inference with large literals
+small := 123          // Width should be default 6 (max(6, 3))
+medium := 123456      // Width should be default 6 (max(6, 6))
+large := 1234567      // Width should be 7 (max(6, 7))
+toolarge := 987654321 // Width should be 9 (max(6, 9))
+
+// We can't easily print them to verify runtime without display padding issues,
+// but the test runner will verify the generated .cbl PIC clauses.
+// Add dummy print to ensure variables are used (some COBOL compilers warn/error)
+print(small)
+print(medium)
+print(large)
+print(toolarge)

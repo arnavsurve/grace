@@ -1,0 +1,7 @@
+largeValue : int(10) = 2147483647
+result : int(10) = largeValue + 1
+
+print("Large integer: ")
+print(largeValue)
+print("After adding 1: ")
+print(result)

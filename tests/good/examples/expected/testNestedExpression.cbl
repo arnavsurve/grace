@@ -1,0 +1,37 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTNESTEDEXPRESSION.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 GRACE-A PIC 9(1).
+       01 GRACE-B PIC 9(2).
+       01 GRACE-C PIC 9(2).
+       01 GRACE-RESULT PIC 9(2).
+
+      *GRACE Compiler Helper Variables
+       01 GRACE-TMP-INT-1 PIC S9(18).
+       01 GRACE-TMP-INT-2 PIC S9(18).
+       01 GRACE-TMP-INT-3 PIC S9(18).
+       01 GRACE-TMP-INT-4 PIC S9(18).
+       01 GRACE-TMP-INT-5 PIC S9(18).
+       01 GRACE-TMP-INT-6 PIC S9(18).
+       01 GRACE-TMP-DISPLAY PIC Z(17)9-.
+
+       PROCEDURE DIVISION.
+       MAIN SECTION.
+           COMPUTE GRACE-A = 5.
+           COMPUTE GRACE-B = 10.
+           COMPUTE GRACE-C = 15.
+      *Expression too long for single COMPUTE ...
+      *Begin multi-step COMPUTE for GRACE-RESULT
+           COMPUTE GRACE-TMP-INT-1 = GRACE-A + GRACE-B.
+           COMPUTE GRACE-TMP-INT-2 = GRACE-B / 2.
+           COMPUTE GRACE-TMP-INT-3 = GRACE-A + GRACE-TMP-INT-2.
+           COMPUTE GRACE-TMP-INT-4 = GRACE-C - GRACE-TMP-INT-3.
+           COMPUTE GRACE-TMP-INT-5 = GRACE-TMP-INT-1 * GRACE-TMP-INT-4.
+           COMPUTE GRACE-TMP-INT-6 = GRACE-TMP-INT-5 / 2.
+           COMPUTE GRACE-RESULT = GRACE-TMP-INT-6.
+      *End multi-step COMPUTE for GRACE-RESULT
+           DISPLAY "Result of complex expression: ".
+           DISPLAY GRACE-RESULT.
+           GOBACK.

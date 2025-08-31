@@ -1,0 +1,7 @@
+proc sayHi(name: string(10)): void {
+	hi := "Hello from the Grace compiler, "
+	print(hi + name  + "!")
+}
+
+sayHi("Arnav")
+

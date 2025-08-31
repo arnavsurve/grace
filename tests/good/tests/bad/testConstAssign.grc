@@ -1,0 +1,1 @@
+const myConst = 123

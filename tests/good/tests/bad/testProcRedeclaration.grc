@@ -1,0 +1,9 @@
+proc duplicate(): void {
+	print("first implementation")
+}
+
+proc duplicate(): void {
+	print("second implementation")
+}
+
+duplicate()

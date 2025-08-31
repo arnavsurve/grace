@@ -1,0 +1,26 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTPROCEDGECASES.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 GRACE-GVAL PIC 9(2).
+
+       PROCEDURE DIVISION.
+       DECLARATIVES.
+       GRACE-EMPTY SECTION.
+           EXIT SECTION.
+
+       GRACE-SHOWVAL SECTION.
+           DISPLAY "Value in proc: ".
+           DISPLAY GRACE-GVAL.
+           EXIT SECTION.
+
+       END DECLARATIVES.
+
+       MAIN SECTION.
+           COMPUTE GRACE-GVAL = 42.
+           PERFORM GRACE-EMPTY.
+           DISPLAY "Global value: ".
+           DISPLAY GRACE-GVAL.
+           PERFORM GRACE-SHOWVAL.
+           GOBACK.

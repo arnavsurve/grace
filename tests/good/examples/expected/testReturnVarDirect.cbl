@@ -1,0 +1,31 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TESTRETURNVARDIRECT.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+
+      *GRACE Procedure Return Variables
+       01 GRACE-RET-GETVALUE PIC 9(2).
+
+      *GRACE Compiler Helper Variables
+       01 GRACE-TMP-INT-1 PIC S9(18).
+       01 GRACE-TMP-DISPLAY PIC Z(17)9-.
+
+       PROCEDURE DIVISION.
+       DECLARATIVES.
+       GRACE-GETVALUE SECTION.
+           COMPUTE GRACE-RET-GETVALUE = 77.
+           EXIT SECTION.
+
+       END DECLARATIVES.
+
+       MAIN SECTION.
+           DISPLAY "Directly printing return value:".
+           PERFORM GRACE-GETVALUE.
+           DISPLAY GRACE-RET-GETVALUE.
+           DISPLAY "Adding return value:".
+           PERFORM GRACE-GETVALUE.
+           COMPUTE GRACE-TMP-INT-1 = 5 + GRACE-RET-GETVALUE.
+           MOVE GRACE-TMP-INT-1 TO GRACE-TMP-DISPLAY.
+           DISPLAY FUNCTION TRIM(GRACE-TMP-DISPLAY).
+           GOBACK.

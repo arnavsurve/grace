@@ -1,0 +1,25 @@
+// Basic arithmetic test
+a := 10
+b := 5
+c := a + b // c should be 15
+d := a - 3 // d should be 7
+e := b * 2 // e should be 10
+f := a / 2 // f should be 5
+
+print(c)
+print(d)
+print(e)
+print(f)
+
+// Test precedence
+g := a + b * 2 // g should be 10 + (5 * 2) = 20
+print(g)
+
+// Test parentheses
+h := (a + b) * 2 // h should be (10 + 5) * 2 = 30
+print(h)
+
+// Test precedence
+i := a * b + 2 // i should be (10 * 5) + 2 = 52
+print(i)
+

@@ -1,0 +1,66 @@
+// ---------------------------------------------------
+// docs/grammar.lark
+// A minimal Grace grammar for literals, procs, print,
+// return, declarations, expressions, and blocks.
+// ---------------------------------------------------
+
+%import common.CNAME       -> IDENT     // a, foo, bar123
+%import common.INT         -> INT       // 123, 42
+%import common.ESCAPED_STRING -> STRING // "hello", "foo\nbar"
+%import common.WS
+%ignore WS
+
+// ignore inline comments
+COMMENT: /\/\/[^\n]*/
+%ignore COMMENT
+
+// ignore block comments
+BLOCK_COMMENT: /\/\*(.|\n)*?\*\//
+%ignore BLOCK_COMMENT
+
+// Top‑level
+program: statement*
+
+// Statements
+?statement: declaration
+          | proc_decl
+          | print_stmt
+          | return_stmt
+          | expr_stmt
+
+declaration: IDENT ":=" expression           // x := 5
+           | "const" IDENT ":" type_node "=" expression  // const y: int(3) = 7
+
+proc_decl: "proc" IDENT "(" param_list? ")" ":" type_node block
+
+param_list: IDENT ":" type_node ("," IDENT ":" type_node)*
+
+print_stmt: "print" "(" expression ")"
+return_stmt: "return" expression?
+expr_stmt: expression
+
+// Types
+type_node: "int" "(" INT ")" 
+         | "string" "(" INT ")"
+         | "void"
+
+// Expressions (left‑recursive avoided via precedence)
+?expression: term
+           | expression "+" term   -> add
+           | expression "-" term   -> sub
+
+?term: factor
+     | term "*" factor             -> mul
+     | term "/" factor             -> div
+
+?factor: INT                       -> int_lit
+       | STRING                    -> str_lit
+       | IDENT "(" arg_list? ")"   -> proc_call
+       | IDENT                     -> ident
+       | "(" expression ")"
+
+// Argument list
+arg_list: expression ("," expression)*
+
+// Blocks
+block: "{" statement* "}"
